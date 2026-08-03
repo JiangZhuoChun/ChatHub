@@ -8,8 +8,8 @@ set(CHAT_SERVER_INCLUDES
 
 add_executable(chat-server
     app/main.cpp
-#        src/net/server.cpp
-#        src/net/session.cpp
+    src/net/server.cpp
+    src/net/session.cpp
     src/protocol/frame_decoder.cpp
 #        src/protocol/chat_payload.cpp
 )
