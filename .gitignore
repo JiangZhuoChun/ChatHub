@@ -1,0 +1,25 @@
+# 构建产物
+build/
+cmake-build-*/
+*.exe
+*.dll
+*.obj
+*.o
+
+# IDE
+.idea/
+.vscode/
+.qtcreator/
+CMakeLists.txt.user
+
+# Node.js
+node_modules/
+
+# SQLite 数据库文件（含用户数据）
+*.db
+*.db-journal
+*.sqlite
+
+# 环境变量（含密钥）
+.env
+*.env
