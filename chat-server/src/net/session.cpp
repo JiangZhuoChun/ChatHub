@@ -3,9 +3,16 @@
 #include <iostream>
 
 namespace net {
-    Session::Session(asio::ip::tcp::socket  socket) :
+    Session::Session(
+        asio::ip::tcp::socket  socket,
+        SessionId session_id,
+        MessageCallback on_message,
+        DisconnectCallback on_disconnect) :
     m_socket( std::move(socket)),
-    m_strand(m_socket.get_executor())
+    m_strand(m_socket.get_executor()),
+    m_on_message(std::move(on_message)),
+    m_id(session_id),
+    m_on_disconnect(std::move(on_disconnect))
     {
     }
     void Session::log(std::string_view  event) {
@@ -13,7 +20,11 @@ namespace net {
     }
 
     void Session::close() {
-        m_socket.close();
+        if (m_disconnected) {
+            return;
+        }
+        m_disconnected = true;
+        m_on_disconnect(m_id);
     }
 
     void Session::start() {
@@ -42,7 +53,7 @@ namespace net {
                 }
                 const auto result = m_decoder.append(m_read_buffer.data(),bytes_transferred,
                     [self](const protocol::Message &message) {
-                        self->handleMessage(std::move(message));
+                        self->processMessage(std::move(message));
                     });
                 if (result != protocol::DecodeResult::ok) {
                     self->log("协议错误，关闭当前连接");
@@ -56,10 +67,10 @@ namespace net {
     void Session::send(protocol::MessageType type, std::string body) {
         auto self = shared_from_this();
         asio::post(m_strand,[self,type, body = std::move(body)] {
-            self->doSend(type,body);
+            self->enqueueAndWrite(type,body);
         });
     }
-    void Session::doSend(protocol::MessageType type, const std::string& body) {
+    void Session::enqueueAndWrite(protocol::MessageType type, const std::string& body) {
         if (body.size() > protocol::FrameDecoder::kMaxBodyLength) {
             std::cerr << "错误：body长度超出限制" << std::endl;
             return;
@@ -76,11 +87,11 @@ namespace net {
         }
         m_write_queue.push_back({type,protocol::makeFrame(type,body)});
         if (was_empty) {
-            doWrite();
+            writeFrame();
         }
     }
 
-    void Session::doWrite() {
+    void Session::writeFrame() {
         if (m_write_queue.empty()) {
             return;
         }
@@ -97,14 +108,14 @@ namespace net {
 
                 std::cout << "发送成功：" << bytes_transferred << "字节" << std::endl;
 
-                self->doWrite();
+                self->writeFrame();
             }));
     }
 
-    void Session::handleMessage(const protocol::Message&  message) {
+    void Session::processMessage(const protocol::Message&  message) {
         switch (message.type) {
             case protocol::MessageType::chat:
-                send(protocol::MessageType::chat,message.body);
+                m_on_message(m_id, message);
                 break;
             case protocol::MessageType::ping:
                 std::cout << "收到ping" << std::endl;
