@@ -8,56 +8,54 @@ namespace net {
 
 class Session;
 
-// 写队列里的一项：一条完整帧（编码后）+ 它的类型
+//功能::写队列项：一条完整帧（编码后）+ 它的类型
 struct WriteItem {
-    protocol::MessageType type;
-    std::string frame;
+    protocol::MessageType type;   //功能::消息类型
+    std::string frame;            //功能::编码好的完整帧
 };
 
-// Session 收到 chat 后通知 Server；Server 决定是否广播及如何路由。
-using SessionId = uint32_t;
-using SessionPtr = std::shared_ptr<Session>;
-// 消息回调：Session 收到完整消息后调用，把消息交给 Server 处理
+//功能::类型别名
+using SessionId = uint32_t;                    //功能::连接 ID
+using SessionPtr = std::shared_ptr<Session>;   //功能::Session 共享指针
+//功能::消息回调：Session 收到完整消息后调用，把消息交给 Server 处理
 using MessageCallback = std::function<void(SessionId,protocol::Message)>;
-
-// 断开回调：Session 关闭后调用，通知 Server 从在线表移除该连接
+//功能::断开回调：Session 关闭后调用，通知 Server 从在线表移除该连接
 using DisconnectCallback = std::function<void(const SessionId)>;
 
-    //一个Session只管理一个客户端socket:读，解码，写，连接生命周期
+    //功能::Session：一个 Session 只管理一个客户端 socket（读、解码、写、生命周期）
 class Session : public std::enable_shared_from_this<Session> {
 public:
-    //构造函数
+    //功能::构造函数：接收 socket、连接 ID、消息回调、断开回调
     Session(asio::ip::tcp::socket,SessionId session_id, MessageCallback on_message,DisconnectCallback on_disconnect);
 
-    //启动Session
+    //功能::启动：投递第一个异步读取
     void start();
+    //功能::发送消息：任意线程可调用，入队后异步写
     void send(protocol::MessageType type, std::string body);
 private:
-    //只在m_strand中调用，安全访问本Session的可变状态
-    void doRead();                  // 异步读取
-    void enqueueAndWrite(protocol::MessageType type, const std::string& body);  // 编码并入队，启动写
-    void writeFrame();              // 写队列中的下一条帧
+    //功能::以下函数只在 m_strand 中调用，安全访问本 Session 的可变状态
+    void doRead();   //功能::异步读取：读→解码→处理
+    void enqueueAndWrite(protocol::MessageType type, const std::string& body);   //功能::编码并入队，必要时启动写
+    void writeFrame();   //功能::写队列中的下一条帧
 
-    //信息处理，chat上交server处理，ping、pong、error留在当前连接处理
+    //功能::业务消息处理：chat 上交 Server，ping/pong/error 留在当前连接处理
     void processMessage(const protocol::Message&  message);
 
-
-
+    //功能::关闭连接：幂等，只通知 Server 一次
     void close();
+    //功能::日志：输出事件信息，自动携带上下文
     static void log(std::string_view event);
-    asio::ip::tcp::socket m_socket;
-    asio::strand<asio::any_io_executor> m_strand;
-    protocol::FrameDecoder m_decoder;
-    //读缓冲
-    std::array<char, 1024> m_read_buffer{};
-    //写队列（待发送的完整帧）
-    std::deque<WriteItem> m_write_queue;
+    //功能::成员变量
+    asio::ip::tcp::socket m_socket;   //功能::客户端 socket
+    asio::strand<asio::any_io_executor> m_strand;   //功能::串行通道，保护本连接状态
+    protocol::FrameDecoder m_decoder;   //功能::帧解码器（半包/粘包）
+    std::array<char, 1024> m_read_buffer{};   //功能::读缓冲
+    std::deque<WriteItem> m_write_queue;   //功能::写队列（待发送的完整帧）
 
-    //是否已断开（保证只通知 Server 一次）
-    bool m_disconnected {false};
-    MessageCallback m_on_message;
-    SessionId m_id;
-    DisconnectCallback m_on_disconnect;
+    bool m_disconnected {false};   //功能::是否已断开（保证只通知 Server 一次）
+    MessageCallback m_on_message;   //功能::消息回调
+    SessionId m_id;   //功能::连接 ID
+    DisconnectCallback m_on_disconnect;   //功能::断开回调
 
 };
 }
