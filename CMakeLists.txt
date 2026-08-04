@@ -16,4 +16,4 @@ set(SQLITE3_INCLUDE_DIR "D:/QT/Tools/mingw1310_64/opt/include")
 set(SQLITE3_LIB_DIR "D:/QT/Tools/mingw1310_64/opt/lib")
 
 add_subdirectory(chat-server)
-#add_subdirectory(client-qt)
+add_subdirectory(client-qt)
