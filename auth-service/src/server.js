@@ -1,7 +1,7 @@
 require('dotenv').config()
 const express = require('express');
 const db = require('./db');
-const bycriptjs = require('bcryptjs');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const SECRET_KEY = process.env.SECRET_KEY;
@@ -22,16 +22,18 @@ app.post('/register', (req, res) => {
     const {username , password} = req.body;
     const error = isValid(username, password);
     if(error){
+
         return res.status(400).json({error});
     }
-
         // 校验参数完整性：缺任一则 400
      try{
          // bcrypt 单向哈希：不存明文，10 为计算复杂度（盐+哈希）
-         const hash = bycriptjs.hashSync(password, 10);
+         const hash = bcrypt.hashSync(password, 10);
          // 插入数据库,用?占位,返回插入的行数
-         const insertSmst = db.prepare('INSERT INTO users (username, password) VALUES (?, ?)');
-         insertSmst.run(username, hash);
+         // statement = SQL语句对象
+         // 简写变量名：stmt
+         const insertStmt = db.prepare('INSERT INTO users (username, password) VALUES (?, ?)');
+         insertStmt.run(username, hash);
          return res.status(201).json({message: '注册成功'});
      }
      catch (err){
@@ -49,9 +51,9 @@ app.post('/login', (req, res) => {
    if(error) {return res.status(400).json({error});}
 
     // 查询用户；找不到或密码不匹配统一返回 401，防止枚举用户名
-    const queryUser = db.prepare('SELECT * FROM users WHERE username = ?');
-   const user = queryUser.get(username);
-   if(!user || !bycriptjs.compareSync(password, user.password)){
+    const queryStmt = db.prepare('SELECT * FROM users WHERE username = ?');
+   const user = queryStmt.get(username);
+   if(!user || !bcrypt.compareSync(password, user.password)){
        return res.status(401).json({error: '用户名或密码错误'});
    }
    const token = jwt.sign({username: username}, SECRET_KEY, {expiresIn: '1h'});
@@ -79,5 +81,5 @@ app.get('/me', (req, res) => {
 });
 
 app.listen(3000, () => {
-    console.log('\'Auth service listening on 3000');
+    console.log('Auth service listening on 3000');
 })

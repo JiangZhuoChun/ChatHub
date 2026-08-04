@@ -57,5 +57,8 @@ private:
     SessionId m_id;   //功能::连接 ID
     DisconnectCallback m_on_disconnect;   //功能::断开回调
 
+
+    static constexpr std::size_t kMaxWriteQueueSize = 3;
+
 };
 }

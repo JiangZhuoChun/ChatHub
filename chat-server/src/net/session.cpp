@@ -2,6 +2,7 @@
 
 #include <iostream>
 
+
 namespace net {
     //功能::构造函数：接收 socket、连接 ID、消息回调、断开回调，初始化成员
     Session::Session(
@@ -86,11 +87,12 @@ namespace net {
         //功能::只有队列从空变为非空时才启动一次 async_write，避免同一 socket 并发写。
         //功能::设置最大发送队列为3
         const bool was_empty = m_write_queue.empty();
-        constexpr std::size_t kMaxWriteQueueSize = 3;
+
         if (m_write_queue.size() >= kMaxWriteQueueSize) {   //功能::队列满：慢客户端，关闭
-            std::cout << "错误：发送队列已满：" << m_write_queue.size() << "/" << kMaxWriteQueueSize
+            std::cout << "错误：发送队列已满：" << m_write_queue.size() << "/" <<kMaxWriteQueueSize
                     << "关闭慢客户端" << std::endl;
             close();
+
             return;
         }
         m_write_queue.push_back({type,protocol::makeFrame(type,body)});   //功能::编码成帧入队

@@ -31,5 +31,7 @@ private:
 
     SessionId m_next_session_id {1};   //功能::连接 ID 计数器
     std::unordered_map<SessionId,SessionPtr> m_sessions;   //功能::在线表：ID → Session
+
+
 };
 }
