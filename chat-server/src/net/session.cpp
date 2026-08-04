@@ -132,6 +132,8 @@ namespace net {
                 if (std::string username; verifyJwt(message.body,username)) {
                     m_authenticated = true;
                     m_username = username;
+                    //JWT认证成功,发送认证成功消息
+                    send(protocol::MessageType::auth, R"({"ok":true})");
                 }else {
                     log("认证失败，关闭连接");
                     close();

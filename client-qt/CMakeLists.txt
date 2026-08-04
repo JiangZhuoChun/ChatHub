@@ -18,6 +18,8 @@ qt_add_executable(client-qt
     HttpClient.h
     HttpClient.cpp
     mainwindow.ui
+    chatclient.cpp
+    chatclient.h
 )
 
 target_link_libraries(client-qt

@@ -2,7 +2,6 @@
 #include "protocol/frame_decoder.h"
 #include <asio.hpp>
 #include <deque>
-
 namespace net {
 
 class Session;
