@@ -15,5 +15,6 @@ set(BOOST_INCLUDE_DIR "D:/CppLearn/third_party/boost_1_91_0")
 set(SQLITE3_INCLUDE_DIR "D:/QT/Tools/mingw1310_64/opt/include")
 set(SQLITE3_LIB_DIR "D:/QT/Tools/mingw1310_64/opt/lib")
 
+set(JWT_INCLUDE_DIR "D:/CppLearn/jwt-cpp/include")
 add_subdirectory(chat-server)
 add_subdirectory(client-qt)

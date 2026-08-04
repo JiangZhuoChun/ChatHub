@@ -10,7 +10,8 @@ namespace protocol {
         chat = 1,   //功能::聊天消息
         ping = 2,   //功能::心跳请求
         pong = 3,   //功能::心跳响应
-        error = 4   //功能::错误消息
+        error = 4,  //功能::错误消息
+        auth = 5    //功能::认证消息
     };
     //功能::解码完成后的消息：只包含业务需要的 type 和 body，不含网络头
     struct Message {

@@ -1,6 +1,5 @@
 #pragma once
 #include "protocol/frame_decoder.h"
-
 #include <asio.hpp>
 #include <deque>
 
@@ -52,10 +51,17 @@ private:
     std::array<char, 1024> m_read_buffer{};   //功能::读缓冲
     std::deque<WriteItem> m_write_queue;   //功能::写队列（待发送的完整帧）
 
+    //验证函数
+    static bool verifyJwt(const std::string& token,std::string& out_username);
+
     bool m_disconnected {false};   //功能::是否已断开（保证只通知 Server 一次）
     MessageCallback m_on_message;   //功能::消息回调
     SessionId m_id;   //功能::连接 ID
     DisconnectCallback m_on_disconnect;   //功能::断开回调
+
+    bool m_authenticated{false}; //功能::是否已认证
+    std::string m_username;// 认证后存的用户名
+
 
 
     static constexpr std::size_t kMaxWriteQueueSize = 3;

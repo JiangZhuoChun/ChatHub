@@ -1,8 +1,10 @@
 #include "net/session.h"
 
 #include <iostream>
+#include <jwt-cpp/jwt.h>
+#include <jwt-cpp/traits/kazuho-picojson/defaults.h>
 
-
+const std::string SECRET_KEY = "chathub-dev-secret";
 namespace net {
     //功能::构造函数：接收 socket、连接 ID、消息回调、断开回调，初始化成员
     Session::Session(
@@ -125,6 +127,21 @@ namespace net {
 
     //功能::业务消息处理：按消息类型分派
     void Session::processMessage(const protocol::Message&  message) {
+        if (!m_authenticated) {
+            if (message.type == protocol::MessageType::auth) {
+                if (std::string username; verifyJwt(message.body,username)) {
+                    m_authenticated = true;
+                    m_username = username;
+                }else {
+                    log("认证失败，关闭连接");
+                    close();
+                }
+            }else {
+                log("未认证先发消息，关闭连接");
+                close();
+            }
+            return;
+        }
         switch (message.type) {
             case protocol::MessageType::chat:   //功能::聊天消息：交给 Server 广播
                 m_on_message(m_id, message);
@@ -139,8 +156,23 @@ namespace net {
             case protocol::MessageType::error:  //功能::错误消息：输出错误内容
                 std::cerr << "错误：" << message.body << std::endl;
                 break;
+            case protocol::MessageType::auth:
+                break;
         }
 
     }
 
+    //验证函数
+    bool Session::verifyJwt(const std::string &token, std::string &out_username) {
+        try {
+            const auto decoded = jwt::decode(token);
+            const auto verifier = jwt::verify().allow_algorithm(jwt::algorithm::hs256{SECRET_KEY});
+            verifier.verify(decoded);
+            out_username = decoded.get_payload_claim("username").as_string();
+            return true;
+        }
+        catch (const std::exception &) {
+            return false;
+        }
+    }
 }

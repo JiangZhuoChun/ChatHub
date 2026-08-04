@@ -19,7 +19,7 @@ namespace {
     //功能::校验消息类型：raw_type 是否在已知类型范围内
     bool isKnownMessageType(std::uint8_t raw_type) {
         return raw_type >= static_cast<std::uint8_t>(protocol::MessageType::chat) &&
-            raw_type <= static_cast<std::uint8_t>(protocol::MessageType::error);
+            raw_type <= static_cast<std::uint8_t>(protocol::MessageType::auth);
     }
 }
 
