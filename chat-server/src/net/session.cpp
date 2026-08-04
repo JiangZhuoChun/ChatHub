@@ -17,7 +17,7 @@ namespace net {
     {
     }
     //功能::日志：统一输出事件信息，方便排查多客户端问题
-    void Session::log(std::string_view  event) {
+    void Session::log(const std::string_view  event) {
         std::cout << event << std::endl;
     }
 
@@ -41,11 +41,11 @@ namespace net {
     void Session::doRead() {
         auto self = shared_from_this();   //功能::持有自身，回调期间 Session 存活
         m_socket.async_read_some(asio::buffer(m_read_buffer),  //功能::异步读入缓冲
-            asio::bind_executor(m_strand,[self, this](std::error_code error,std::size_t bytes_transferred)
+            asio::bind_executor(m_strand,[self, this](const std::error_code error, const std::size_t bytes_transferred)
             {
                 if (error) {   //功能::读取出错，按错误类型处理
                     if (error == asio::error::eof) {
-                        self->log("正常断开连接");   //功能::客户端正常关闭（EOF）
+                        net::Session::log("正常断开连接");   //功能::客户端正常关闭（EOF）
                     }
                     else if (error == asio::error::operation_aborted) {
                         return;   //功能::主动取消，正常收尾直接返回
@@ -59,10 +59,10 @@ namespace net {
                 //功能::解码本次读取的字节，可能拼出多条完整消息
                 const auto result = m_decoder.append(m_read_buffer.data(),bytes_transferred,
                     [self](const protocol::Message &message) {
-                        self->processMessage(std::move(message));   //功能::把完整消息交给业务处理
+                        self->processMessage(message);   //功能::把完整消息交给业务处理
                     });
                 if (result != protocol::DecodeResult::ok) {   //功能::协议错误（非法magic/超长等）
-                    self->log("协议错误，关闭当前连接");
+                    net::Session::log("协议错误，关闭当前连接");
                     self->close();
                     return;
                 }
@@ -78,7 +78,7 @@ namespace net {
         });
     }
     //功能::编码并入队：把消息编码成帧放进写队列，必要时启动写
-    void Session::enqueueAndWrite(protocol::MessageType type, const std::string& body) {
+    void Session::enqueueAndWrite(const protocol::MessageType type, const std::string& body) {
         if (body.size() > protocol::FrameDecoder::kMaxBodyLength) {   //功能::body超长限制
             std::cerr << "错误：body长度超出限制" << std::endl;
             return;
@@ -106,7 +106,7 @@ namespace net {
         }
         auto self = shared_from_this();   //功能::持有自身，写回调期间 Session 存活
         asio::async_write(m_socket,asio::buffer(m_write_queue.front().frame),  //功能::写队首帧
-            asio::bind_executor(m_strand,[self, this](std::error_code error,std::size_t bytes_transferred) {
+            asio::bind_executor(m_strand,[self, this](const std::error_code error, const std::size_t bytes_transferred) {
                 if ( error) {   //功能::写失败，关闭
                     std::cerr << "错误,发送失败" << error.message() << std::endl;
                     self->close();
