@@ -70,6 +70,10 @@ void ChatClient::disconnectFromServer() {
     m_socket.disconnectFromHost();//优雅断开，等待数据发完再断
 }
 
+bool ChatClient::isAuthenticated() const {
+    return m_state == AuthState::authenticated;
+}
+
 //槽函数实现
 void ChatClient::onSocketConnected() {
     m_connect_timer.stop();

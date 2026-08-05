@@ -1,48 +1,33 @@
-#ifndef MAINWINDOW_H
-#define MAINWINDOW_H
+#pragma once
 
 #include <QMainWindow>
-#include "HttpClient.h"
-#include "chatclient.h"
-QT_BEGIN_NAMESPACE
+#include <QString>
+
+class ChatClient;
+
 namespace Ui {
 class MainWindow;
 }
-QT_END_NAMESPACE
 
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    explicit MainWindow(ChatClient *chat_client,
+                        const QString &username,
+                        QWidget *parent = nullptr);
     ~MainWindow() override;
 
-
 private slots:
-    void on_loginBtn_clicked();
-    void on_registerBtn_clicked();
-
-    //http请求
-    void onRequestFinish(int statusCode, const QByteArray &body);
-    void onRequestError(const QString & error);
-    void onRequestTimeOut();
+    void onDisconnected();
 
 private:
-    enum class RequestType {
-        none,
-        login,
-        registerUser
-    };
-
-    void setUi();
+    void setupUiState();
     void connectSlots();
-    void showMessage(const QString &message) const;
-    void setRequestBtnEnabled(bool  enabled) const;
+    void updateConnectionState(bool connected, const QString &message);
 
     Ui::MainWindow *ui;
-    HttpClient *m_http;
     ChatClient *m_chat;
-    RequestType m_pending_request {RequestType::none};
+    QString m_username;
 };
-#endif // MAINWINDOW_H

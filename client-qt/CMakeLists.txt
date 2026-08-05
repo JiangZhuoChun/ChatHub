@@ -1,14 +1,8 @@
 cmake_minimum_required(VERSION 3.19)
 
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network)
+qt_standard_project_setup(REQUIRES 6.8)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets)
-
-qt_standard_project_setup()
-
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network)
 
 qt_add_executable(client-qt
     WIN32 MACOSX_BUNDLE
@@ -18,6 +12,9 @@ qt_add_executable(client-qt
     HttpClient.h
     HttpClient.cpp
     mainwindow.ui
+    logindialog.cpp
+    logindialog.h
+    logindialog.ui
     chatclient.cpp
     chatclient.h
 )
