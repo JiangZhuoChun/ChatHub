@@ -38,7 +38,7 @@ private:
     void doRead();   //功能::异步读取：读→解码→处理
     void enqueueAndWrite(protocol::MessageType type, const std::string& body);   //功能::编码并入队，必要时启动写
     void writeFrame();   //功能::写队列中的下一条帧
-
+    static std::string makeChatError(const std::string& local_id,const std::string& code,const std::string& message);
     //功能::业务消息处理：chat 上交 Server，ping/pong/error 留在当前连接处理
     void handlerMessage(const protocol::Message&  message);
 

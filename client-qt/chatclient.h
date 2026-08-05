@@ -13,6 +13,8 @@ public:
     void connectSlots();
     bool isAuthenticated() const;
 
+    void sendChatMessage(const QString &to, const QString &content);
+
 signals:
     // TCP 已连接，认证帧已进入发送缓冲区
     void authFrameSent();
@@ -24,6 +26,16 @@ signals:
     void connectionFailed(const QString &reason);
     // 已认证后连接断开
     void disconnected();
+    // 聊天消息发送失败
+    void chatSendFailed(const QString &local_id, const QString &reason);\
+    //处理没有 local_id 的普通系统错误
+    void serverError(const QString &reason);
+    //接收消息
+    void chatMessageReceived(const QString &local_id,const QString &from,
+        const QString &to,const QString &content, const QDateTime &send_at);
+    // 聊天消息已进入发送缓冲区
+    void chatMessageQueued(const QString &to, const QString &content,const QString &local_id);
+
 
 private slots:
     void onSocketConnected();
@@ -39,8 +51,18 @@ private:
         authenticated//认证成功，已登录。
     };
 
+    static QByteArray  makeFrame(quint8 type, const QByteArray &body) ;
+    bool writeFrame(quint8 type, const QByteArray &body, QString error);
     void sendAuthFrame();
+    void sendPing();
     void processReceivedFrames();
+
+    void dispatchFrame(quint8 type, const QByteArray &body);
+    void handleAuthBody(const QByteArray &body);
+    void handleChatBody(const QByteArray &body);
+    void handleErrorBody(const QByteArray &body);
+    void handlePingBody(const QByteArray &body);
+    void handlePongBody(const QByteArray &body);
 
     QTcpSocket m_socket;
     QString m_token;

@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1120</width>
-    <height>720</height>
+    <width>537</width>
+    <height>310</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -209,6 +209,14 @@
            <bool>true</bool>
           </property>
           <widget class="QWidget" name="messageContainer">
+           <property name="geometry">
+            <rect>
+             <x>0</x>
+             <y>0</y>
+             <width>252</width>
+             <height>69</height>
+            </rect>
+           </property>
            <layout class="QVBoxLayout" name="messageLayout">
             <item>
              <spacer name="messageBottomSpacer">
@@ -284,7 +292,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>1120</width>
+     <width>537</width>
      <height>21</height>
     </rect>
    </property>

@@ -1,7 +1,21 @@
 #include "net/server.h"
-
 #include <iostream>
 #include <boost/json.hpp>
+#include "protocol/chat_payload.h"
+#include <string_view>
+namespace {
+    // 路由失败响应携带 local_id，客户端才能把错误绑定到具体聊天气泡。
+    std::string makeRouteErrorBody(const std::string& local_id, const std::string& code, const std::string& message) {
+        boost::json::object obj;
+        obj["scope"] = "chat";
+        obj["code"] = std::string(code);
+        obj["message"] = std::string(message);
+        if (!local_id.empty()) {
+            obj["local_id"] = std::string(local_id);
+        }
+        return  boost::json::serialize(obj);
+    }
+}
 namespace net {
     //功能::构造函数：创建串行通道、监听端口、准备待接受 socket
     Server::Server(asio::io_context &io_context, std::uint16_t port):
@@ -72,30 +86,39 @@ namespace net {
         }));
     }
 
-    //功能::收到客户端消息：打印并交给广播
+    //功能::收到客户端消息：打印并交给
     void Server::onSessionMessage(SessionId sender_id, const protocol::Message& message) {
         std::cout << "客户端#" << sender_id << "发送：" << message.body << std::endl;
         sendToUser(sender_id,message);
     }
     //功能::
     void Server::sendToUser(SessionId sender_id,const protocol::Message& message) {
-        //解析JSON字符串
-       boost::json::value jv = boost::json::parse(message.body);
-        auto to = jv.at("to").as_string();
-        auto content = jv.at("content").as_string();
-        //转 std::string（string_view 不能直接查 map）
-        const std::string to_name(to.data(),to.size());
-        const std::string content_str(content.data(),content.size());
-        //判断接收者是否在线
-        if (const auto it = m_username_to_session.find(to_name);
-            it != m_username_to_session.end())
-        {
-            if (const auto recv_it = m_sessions.find(it->second);
-                recv_it != m_sessions.end())
-            {
-                recv_it->second->send(message.type, content_str);
-            }
+        // Session 已经做过一次校验，这里再次解析是当前回调接口下的防御性检查。
+        const auto payload = protocol::parseChatPayload(message.body);
+        if (payload.error != protocol::ChatPayloadError::none) {
+            return;
         }
+        const auto target_it = m_username_to_session.find(payload.to);
+        const auto sender_it = m_sessions.find(sender_id);
+
+        if (target_it == m_username_to_session.end()) {
+            if (sender_it == m_sessions.end()) {
+                const std::string error_body = makeRouteErrorBody(payload.local_id,"recipient_offline","接收者不在线");
+                sender_it->second->send(protocol::MessageType::error, error_body);
+            }
+            return;
+        }
+        boost::json::object forwarded;
+        forwarded["local_id"] = payload.local_id;
+        forwarded["from"] = m_session_to_username.at(sender_id);
+        forwarded["to"] = payload.to;
+        forwarded["content"] = payload.content;
+
+        const std::string forward_body = boost::json::serialize(forwarded);
+        const auto recv_it = m_sessions.find(target_it->second);
+        recv_it->second->send(protocol::MessageType::chat, forward_body);
+
+
 
     }
     //功能::登记在线表：把新连接的 Session 存入 map

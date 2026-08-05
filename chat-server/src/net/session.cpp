@@ -1,6 +1,7 @@
 #include "net/session.h"
 
 #include <iostream>
+#include <boost/json.hpp>
 #include <jwt-cpp/jwt.h>
 #include <jwt-cpp/traits/kazuho-picojson/defaults.h>
 
@@ -129,6 +130,20 @@ namespace net {
             }));
     }
 
+    std::string Session::makeChatError(const std::string &local_id, const std::string &code, const std::string &message)
+    {
+        // 聊天错误使用 JSON，客户端才能根据 local_id 找回失败的消息气泡。
+        boost::json::object obj;
+        obj["scope"] = "chat";
+        obj["code"] = code;
+        obj["message"] = message;
+
+        if (local_id.empty()) {
+            obj["local_id"] = local_id;
+        }
+        return boost::json::serialize(obj);
+    }
+
     //功能::业务消息处理：按消息类型分派
     void Session::handlerMessage(const protocol::Message&  message) {
         if (!m_authenticated) {
@@ -154,7 +169,7 @@ namespace net {
         switch (message.type) {
             case protocol::MessageType::chat://功能::聊天消息：交给 Server 广播
             {
-                // Session 只负责接收与解码；聊天路由交给 Server 决定
+                // Session 只负责接收、校验和错误反馈；只有校验成功才交给 Server 路由。
                 const auto result = protocol::parseChatPayload(message.body);
                 if (result.error != protocol::ChatPayloadError::none) {
                     std::string error_message = "聊天消息校验失败";
@@ -177,14 +192,25 @@ namespace net {
                             error_message = "客户端不能指定 sender_id";
                             break;
                         case protocol::ChatPayloadError::content_too_long:
-                            error_message = "聊天内容不能超过 200 字节";
+                            error_message = "聊天内容不能超过 1024 字节";
                             break;
+                        case protocol::ChatPayloadError::missing_local_id:
+                            error_message = "聊天消息缺少 local_id";
+                            break;
+                        case protocol::ChatPayloadError::local_id_not_string:
+                            error_message = "local_id 必须是字符串";
+                            break;
+                        case protocol::ChatPayloadError::blank_local_id:
+                            error_message = "local_id 不能为空";
+                            break;
+                        case protocol::ChatPayloadError::local_id_too_long:
+                            error_message = "local_id 不能超过 64 字节";
                     }
                     // 正文校验失败只反馈给发送者
                     send(protocol::MessageType::error,std::move(error_message));
                 }
-                m_on_message(m_id, message);
-                break;
+                    m_on_message(m_id, message);
+                    break;
             }
             case protocol::MessageType::ping:   //功能::心跳请求：回复 pong
                 std::cout << "收到ping" << std::endl;

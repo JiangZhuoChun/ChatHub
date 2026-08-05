@@ -18,7 +18,7 @@ public:
     explicit LoginDialog(ChatClient *chat_client, QWidget *parent = nullptr);
     ~LoginDialog() override;
 
-    QString username() const;
+   QString username() const;
 
 protected:
     void reject() override;
@@ -36,6 +36,8 @@ private slots:
     void onAuthSucceeded();
     void onAuthFailed(const QString &reason);
     void onConnectionFailed(const QString &reason);
+
+
 
 private:
     enum class RequestType {

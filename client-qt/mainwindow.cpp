@@ -5,14 +5,15 @@
 
 #include <QLabel>
 #include <QStyle>
+#include <utility>
 
 MainWindow::MainWindow(ChatClient *chat_client,
-                       const QString &username,
+                       QString username,
                        QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , m_chat(chat_client)
-    , m_username(username)
+    , m_username(std::move(username))
 {
     Q_ASSERT(m_chat != nullptr);
     ui->setupUi(this);
@@ -46,9 +47,9 @@ void MainWindow::connectSlots()
                               : QStringLiteral("连接未认证"));
 }
 
-void MainWindow::updateConnectionState(bool connected, const QString &message)
-{
+void MainWindow::updateConnectionState(const bool connected, const QString &message) const {
     ui->connectionStateLabel->setProperty("status", connected ? "ok" : "error");
+    //unpolish + polish 强制刷新样式
     ui->connectionStateLabel->style()->unpolish(ui->connectionStateLabel);
     ui->connectionStateLabel->style()->polish(ui->connectionStateLabel);
     ui->connectionStateLabel->setText(message);
@@ -56,7 +57,6 @@ void MainWindow::updateConnectionState(bool connected, const QString &message)
     ui->sendBtn->setEnabled(false);
 }
 
-void MainWindow::onDisconnected()
-{
+void MainWindow::onDisconnected() const {
     updateConnectionState(false, QStringLiteral("连接已断开，请重新登录"));
 }

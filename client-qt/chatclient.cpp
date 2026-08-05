@@ -1,15 +1,22 @@
 #include "chatclient.h"
 #include <QHostAddress>
+#include <QUuid>
+#include <QJsonDocument>
+#include <QJsonObject>
 namespace {
     constexpr int kHeaderLength = 8;
-    constexpr  quint16 kMagic = 0x4348;//"CH"
-    constexpr  quint8 kVersion = 1;
-    constexpr  quint8 kAuthType = 5;
-    constexpr  quint8 kErrorType = 4;
-    constexpr  quint32 kMaxBodyLength = 1024;
+    constexpr quint16 kMagic = 0x4348;//"CH"
+    constexpr quint8 kVersion = 1;
+
+    constexpr quint8 kChatType = 1;
+    constexpr quint8 kPingType = 2;
+    constexpr quint8 kPongType = 3;
+    constexpr quint8 kErrorType = 4;
+    constexpr quint8 kAuthType = 5;
+    constexpr quint32 kMaxBodyLength = 1024;
 }
 
-bool isKnownType(quint8  type) {
+bool isKnownType(const quint8  type) {
     return type >= 1 && type <= 5;
 }
 
@@ -74,40 +81,105 @@ bool ChatClient::isAuthenticated() const {
     return m_state == AuthState::authenticated;
 }
 
+void ChatClient::sendChatMessage(const QString &to, const QString &content) {
+    // local_id 只属于 chat body，用于服务端错误响应、确认响应和 UI 重试关联。
+    //默认 UUID 带大括号：{550e8400-e29b-41d4-a716-446655440000}，WithoutBraces 无大括号
+    const QString local_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+    const QString normalized_to = to.trimmed();
+
+    if (m_state != AuthState::authenticated) {
+        emit chatSendFailed(local_id, "未认证");
+        return;
+    }
+    if (normalized_to.isEmpty() || content.trimmed().isEmpty()) {
+        emit chatSendFailed(local_id, "消息不能为空");
+        return;
+    }
+
+    QJsonObject obj;
+    obj["to"] = normalized_to;
+    obj["content"] = content;
+    obj["local_id"] = local_id;
+    //Compact（压缩模式）无换行、无空格，紧凑单行，减少网络流量：
+    const QByteArray body = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+
+    if (const QString error; !writeFrame(kErrorType, body, error))
+    {
+       emit chatSendFailed(local_id,error);
+       return;
+    }
+
+    emit chatMessageQueued(normalized_to, content, local_id);
+}
+
 //槽函数实现
 void ChatClient::onSocketConnected() {
     m_connect_timer.stop();
     sendAuthFrame();
 }
-void ChatClient::sendAuthFrame() {
-    const QByteArray body = m_token.toUtf8();
-    if (body.size() > static_cast<int>(kMaxBodyLength)) {
-        m_state = AuthState::idle;
-        emit authFailed("token超过协议允许的1024字节");
-        m_socket.disconnectFromHost();
-        return;
-    }
+
+QByteArray ChatClient::makeFrame(const quint8 type, const QByteArray &body) {
     QByteArray frame;
+    const auto length = static_cast<quint32>(body.size());
+
     frame.reserve(kHeaderLength + body.size());
     frame.append(static_cast<char>(kMagic >> 8));   //[0x43] 高字节
     frame.append(static_cast<char>(kMagic & 0xFF)); //[0x48] 低字节
     frame.append(static_cast<char>(kVersion));// [0x01]
-    frame.append(static_cast<char>(kAuthType));// [0x05]
+    frame.append(static_cast<char>(type));
     //大端存储
-    const auto length = static_cast<quint32>(body.size());
+
     frame.append(static_cast<char>((length >> 24) & 0xFF));
     frame.append(static_cast<char>((length >> 16) & 0xFF));
     frame.append(static_cast<char>((length >> 8) & 0xFF));
     frame.append(static_cast<char>(length & 0xFF));
     frame.append(body);
 
+    return frame;
+}
+
+bool ChatClient::writeFrame(quint8 type, const QByteArray &body, QString error) {
+    // 所有业务帧共用这里的协议头组装结果；不同 type 的 body 由上层分别构造。
+    error.clear();
+    if (body.size() > static_cast<int>(kMaxBodyLength)) {
+        error = QStringLiteral("消息体超过协议允许的长度");
+        return false;
+    }
+    if (m_socket.state() != QAbstractSocket::ConnectedState) {
+        error = QStringLiteral("TCP尚未连接");
+        return false;
+    }
+    const QByteArray frame = makeFrame(type, body);
     if (m_socket.write(frame) == -1) {
+        error = m_socket.errorString();
+        return false;
+    }
+    return true;
+}
+void ChatClient::sendAuthFrame() {
+    const QByteArray body = m_token.toUtf8();
+
+    if (const QString error; !writeFrame(kAuthType, body, error))
+    {
         m_state = AuthState::idle;
-        emit authFailed("发送认证帧失败" + m_socket.errorString());
+        emit authFailed(QStringLiteral("认证帧发送失败:") + error);
         return;
     }
+
     m_state = AuthState::waitingAuthResult;
     emit authFrameSent();
+}
+
+void ChatClient::sendPing() {
+    if (m_state != AuthState::authenticated) {
+        return;
+    }
+    if (const QString error; !writeFrame(kPingType, QByteArray(), error)) {
+        // 心跳失败不属于聊天消息失败
+        // 让 socket 的错误/断开信号处理连接状态
+        m_socket.abort();
+    }
 }
 
 void ChatClient::onSocketReady() {
@@ -139,24 +211,11 @@ void ChatClient::processReceivedFrames() {
         const QByteArray body = m_received_buffer.mid(kHeaderLength, body_length);
         m_received_buffer.remove(0, frame_length);
 
-        if (type == kAuthType && m_state == AuthState::waitingAuthResult) {
-            m_state = AuthState::authenticated;
-            emit authSucceeded();
-            continue;
-        }
-        if (type == kErrorType) {
-            m_state = AuthState::idle;
-            const QString reason = body.isEmpty() ? "服务器拒绝认证" : QString::fromUtf8(body);
-            emit authFailed(reason);
-            m_socket.disconnectFromHost();
-            return;
-        }
-        // 后续聊天消息、ping/pong 会在这里继续分派。
-
+        dispatchFrame(type,body);
     }
 }
 
-void ChatClient::onSocketError(QAbstractSocket::SocketError socket_error) {
+void ChatClient::onSocketError(const QAbstractSocket::SocketError socket_error) {
     if (socket_error == QAbstractSocket::RemoteHostClosedError) {
         return;
     }
@@ -186,4 +245,106 @@ void ChatClient:: onSocketDisconnected() {
     else if (old_state == AuthState::connecting) {
         emit connectionFailed("服务端在连接建立前断开了连接");
     }
+}
+
+void ChatClient::dispatchFrame(quint8 type, const QByteArray &body) {
+    // 先按 type 分派，再由对应 handler 解释 body，避免把心跳/认证当作聊天 JSON。
+    switch (type)
+    {
+        case kAuthType:
+            handleAuthBody(body);
+            break;
+        case kPingType:
+            handlePingBody(body);
+            break;
+        case kChatType:
+            handleChatBody(body);
+            break;
+        case kErrorType:
+            handleErrorBody(body);
+            break;
+        case kPongType:
+            handlePongBody(body);
+            break;
+        default:
+            emit serverError(QStringLiteral("收到未知消息类型"));
+            break;
+    }
+}
+
+void ChatClient::handleAuthBody(const QByteArray &body) {
+    if (m_state != AuthState::waitingAuthResult) {
+        return;
+    }
+    QJsonParseError parse_error;
+    const QJsonDocument document = QJsonDocument::fromJson(body,&parse_error);
+    if (parse_error.error != QJsonParseError::NoError || !document.isObject()
+        || !document.object().value("ok").toBool())
+    {
+        m_state = AuthState::idle;
+        emit authFailed(QStringLiteral("认证响应格式错误"));
+        m_socket.disconnectFromHost();
+        return;
+    }
+    m_state = AuthState::authenticated;
+    emit authSucceeded();
+}
+
+void ChatClient::handleChatBody(const QByteArray &body) {
+    QJsonParseError parse_error;
+    const QJsonDocument document = QJsonDocument::fromJson(body,&parse_error);
+
+    if (parse_error.error != QJsonParseError::NoError || !document.isObject()) {
+        emit serverError(QStringLiteral("聊天信息JSON格式错误"));
+        return;
+    }
+    const QJsonObject obj = document.object();
+    const QString local_id = obj.value("local_id").toString();
+    const QString from = obj.value("from").toString();
+    const QString to = obj.value("to").toString();
+    const QString content = obj.value("content").toString();
+
+    if (local_id.isEmpty() || from.isEmpty() || to.isEmpty() || content.isEmpty()) {
+        emit serverError(QStringLiteral("聊天信息必要缺少字段"));
+        return;
+    }
+
+    const QDateTime send_at = QDateTime::fromString(obj.value("send_at").toString(),Qt::ISODate);
+    emit chatMessageReceived(local_id,from,to,content,send_at);
+}
+
+void ChatClient::handleErrorBody(const QByteArray &body) {
+    QJsonParseError parse_error;
+    const QJsonDocument document =QJsonDocument::fromJson(body, &parse_error);
+
+    if (parse_error.error != QJsonParseError::NoError || !document.isObject()) {
+        emit serverError(QString::fromUtf8(body));
+        return;
+    }
+    const QJsonObject ojb = document.object();
+    const QString local_id = ojb.value("local_id").toString();
+    const QString reason = ojb.value("reason").toString(QStringLiteral("服务器返回错误"));
+
+    if (!local_id.isEmpty()) {
+        emit chatSendFailed(local_id,reason);
+        return;
+    }
+    if (m_state == AuthState::waitingAuthResult) {
+        m_state = AuthState::idle;
+        emit authFailed(reason);
+        m_socket.disconnectFromHost();
+        return;
+    }
+    emit serverError(reason);
+}
+
+void ChatClient::handlePingBody(const QByteArray &body) {
+    const QString error;
+    if (!writeFrame(kPongType,body,error)) {
+        m_socket.abort();
+    }
+}
+
+void ChatClient::handlePongBody(const QByteArray &body) {
+    Q_UNUSED(body);
 }

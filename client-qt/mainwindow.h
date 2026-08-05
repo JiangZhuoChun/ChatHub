@@ -15,17 +15,17 @@ class MainWindow : public QMainWindow
 
 public:
     explicit MainWindow(ChatClient *chat_client,
-                        const QString &username,
+                        QString username,
                         QWidget *parent = nullptr);
     ~MainWindow() override;
 
 private slots:
-    void onDisconnected();
+    void onDisconnected() const;
 
 private:
     void setupUiState();
     void connectSlots();
-    void updateConnectionState(bool connected, const QString &message);
+    void updateConnectionState(bool connected, const QString &message) const;
 
     Ui::MainWindow *ui;
     ChatClient *m_chat;
