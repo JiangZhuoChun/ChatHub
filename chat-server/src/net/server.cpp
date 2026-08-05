@@ -1,7 +1,7 @@
 #include "net/server.h"
 
 #include <iostream>
-
+#include <boost/json.hpp>
 namespace net {
     //功能::构造函数：创建串行通道、监听端口、准备待接受 socket
     Server::Server(asio::io_context &io_context, std::uint16_t port):
@@ -41,7 +41,7 @@ namespace net {
                 //功能::消息回调：Session 收到 chat 后调用，post 回 Server strand 再访问在线表
                 auto on_message = [this](SessionId sender_id, protocol::Message message) {
                     asio::post(m_strand,[this, sender_id, message = std::move(message)]() {
-                        onSessionMessage(sender_id, std::move(message));
+                        onSessionMessage(sender_id, message);
                     });
                 };
                 //功能::断开回调：Session 断开后调用，post 回 Server strand 移除在线表
@@ -50,12 +50,20 @@ namespace net {
                      removeSession(session_id);
                   });
                 };
+                //功能::认证回调：Session 认证成功后调用，post 回 Server strand 添加用户名
+                auto on_authenticated = [this](SessionId session_id, std::string username) {
+                    asio::post(m_strand,[this, session_id, username = std::move(username)]() {
+                        m_username_to_session.emplace(username, session_id);
+                        m_session_to_username.emplace(session_id, username);
+                    });
+                };
                 //功能::创建 Session，传入 socket/ID/两个回调；Server 持有一份 shared_ptr，异步回调也会持有
-                auto session = std::make_shared<Session>(
+                const auto session = std::make_shared<Session>(
                     std::move(m_pending_socket),
                     session_id,
                     std::move(on_message),
-                    std::move(on_disconnect));
+                    std::move(on_disconnect),
+                    std::move(on_authenticated));
                 addSession(session_id, session);   //功能::登记进在线表
                 session->start();   //功能::启动 Session 开始读取
             }
@@ -67,23 +75,42 @@ namespace net {
     //功能::收到客户端消息：打印并交给广播
     void Server::onSessionMessage(SessionId sender_id, const protocol::Message& message) {
         std::cout << "客户端#" << sender_id << "发送：" << message.body << std::endl;
-        broadcast(sender_id,message);
+        sendToUser(sender_id,message);
     }
-    //功能::广播：遍历在线表，跳过发送者，把消息发给其他所有客户端
-    void Server::broadcast(SessionId sender_id,const protocol::Message& message) {
-        for (auto& [id, session] : m_sessions) {
-            if (id != sender_id) {   //功能::跳过发送者
-                session->send(message.type,message.body);   //功能::发给其他客户端
+    //功能::
+    void Server::sendToUser(SessionId sender_id,const protocol::Message& message) {
+        //解析JSON字符串
+       boost::json::value jv = boost::json::parse(message.body);
+        auto to = jv.at("to").as_string();
+        auto content = jv.at("content").as_string();
+        //转 std::string（string_view 不能直接查 map）
+        const std::string to_name(to.data(),to.size());
+        const std::string content_str(content.data(),content.size());
+        //判断接收者是否在线
+        if (const auto it = m_username_to_session.find(to_name);
+            it != m_username_to_session.end())
+        {
+            if (const auto recv_it = m_sessions.find(it->second);
+                recv_it != m_sessions.end())
+            {
+                recv_it->second->send(message.type, content_str);
             }
         }
+
     }
     //功能::登记在线表：把新连接的 Session 存入 map
     void Server::addSession(SessionId session_id, const SessionPtr& session) {
+        //功能::在线表：ID → Session
         m_sessions.emplace(session_id, session);
         std::cout << "客户端#" << session_id << "已登记,当前在线:" << m_sessions.size() << std::endl;
     }
     //功能::移除在线表：客户端断开时删除对应项，防止广播给死连接
     void Server::removeSession(SessionId session_id) {
+        if (const auto it = m_session_to_username.find(session_id); it != m_session_to_username.end()) {
+            const auto name = it->second;
+            m_username_to_session.erase(name);
+            m_session_to_username.erase(session_id);
+        }
         if (const auto rm_count = m_sessions.erase(session_id); rm_count != 0) {
             std::cout << "客户端 #" << session_id << " 已移出在线表，当前在线："<< m_sessions.size() << std::endl;
         }

@@ -37,8 +37,8 @@ private:
 
     void setUi();
     void connectSlots();
-    void showMessage(const QString &message);
-    void setRequestBtnEnabled(bool  enabled);
+    void showMessage(const QString &message) const;
+    void setRequestBtnEnabled(bool  enabled) const;
 
     Ui::MainWindow *ui;
     HttpClient *m_http;

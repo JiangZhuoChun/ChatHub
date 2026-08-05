@@ -10,7 +10,7 @@ public:
 
     void connectWithToken(const QString &token);
     void disconnectFromServer();
-    void connectWith();
+    void connectSlots();
 
 signals:
     // TCP 已连接，认证帧已进入发送缓冲区

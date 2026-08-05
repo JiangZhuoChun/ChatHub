@@ -15,16 +15,19 @@ struct WriteItem {
 //功能::类型别名
 using SessionId = uint32_t;                    //功能::连接 ID
 using SessionPtr = std::shared_ptr<Session>;   //功能::Session 共享指针
+
 //功能::消息回调：Session 收到完整消息后调用，把消息交给 Server 处理
 using MessageCallback = std::function<void(SessionId,protocol::Message)>;
 //功能::断开回调：Session 关闭后调用，通知 Server 从在线表移除该连接
 using DisconnectCallback = std::function<void(const SessionId)>;
+//功能::认证回调：Session 认证成功后调用，把用户名交给 Server 处理
+using AuthenticatedCallback = std::function<void(SessionId, const std::string&)>;
 
     //功能::Session：一个 Session 只管理一个客户端 socket（读、解码、写、生命周期）
 class Session : public std::enable_shared_from_this<Session> {
 public:
     //功能::构造函数：接收 socket、连接 ID、消息回调、断开回调
-    Session(asio::ip::tcp::socket,SessionId session_id, MessageCallback on_message,DisconnectCallback on_disconnect);
+    Session(asio::ip::tcp::socket,SessionId session_id,MessageCallback on_message,DisconnectCallback on_disconnect,AuthenticatedCallback on_authenticated);
 
     //功能::启动：投递第一个异步读取
     void start();
@@ -37,7 +40,7 @@ private:
     void writeFrame();   //功能::写队列中的下一条帧
 
     //功能::业务消息处理：chat 上交 Server，ping/pong/error 留在当前连接处理
-    void processMessage(const protocol::Message&  message);
+    void handlerMessage(const protocol::Message&  message);
 
     //功能::关闭连接：幂等，只通知 Server 一次
     void close();
@@ -57,6 +60,7 @@ private:
     MessageCallback m_on_message;   //功能::消息回调
     SessionId m_id;   //功能::连接 ID
     DisconnectCallback m_on_disconnect;   //功能::断开回调
+    AuthenticatedCallback m_on_authenticated;//功能::认证回调
 
     bool m_authenticated{false}; //功能::是否已认证
     std::string m_username;// 认证后存的用户名

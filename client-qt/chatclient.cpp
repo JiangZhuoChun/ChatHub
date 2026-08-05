@@ -20,11 +20,11 @@ ChatClient::ChatClient(QObject *parent) :
 {
     m_connect_timer.setSingleShot(true);
 
-    connectWith();
+    connectSlots();
 
 }
 
-void ChatClient::connectWith() {
+void ChatClient::connectSlots() {
     connect(&m_socket,&QTcpSocket::connected,this,&ChatClient::onSocketConnected);
 
     connect(&m_socket,&QTcpSocket::readyRead,this,&ChatClient::onSocketReady);

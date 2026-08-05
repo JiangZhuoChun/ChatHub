@@ -11,12 +11,13 @@ add_executable(chat-server
     src/net/server.cpp
     src/net/session.cpp
     src/protocol/frame_decoder.cpp
-#        src/protocol/chat_payload.cpp
+    src/protocol/chat_payload.cpp
 )
 target_include_directories(chat-server PRIVATE
         ${CHAT_SERVER_INCLUDES}
         ${JWT_INCLUDE_DIR}
         ${SQLITE3_INCLUDE_DIR}   # OpenSSL 头文件（opt/include 下）
+        ${BOOST_INCLUDE_DIR}     # boost::json 头文件（W8 私聊路由解析）
 )
 target_link_directories(chat-server PRIVATE ${SQLITE3_LIB_DIR})
 target_link_libraries(chat-server PRIVATE
@@ -51,6 +52,7 @@ target_include_directories(jwt_demo PRIVATE
     ${CHAT_SERVER_INCLUDES}
     ${JWT_INCLUDE_DIR}
     ${SQLITE3_INCLUDE_DIR}   # OpenSSL 头文件（opt/include 下）
+    ${BOOST_INCLUDE_DIR}
 )
 target_link_directories(jwt_demo PRIVATE ${SQLITE3_LIB_DIR})
 target_link_libraries(jwt_demo PRIVATE crypto)

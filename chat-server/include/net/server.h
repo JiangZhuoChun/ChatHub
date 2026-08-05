@@ -1,6 +1,5 @@
 #pragma once
 #include "net/session.h"
-#include <cstdint>
 #include <unordered_map>
 namespace net {
     //功能::Server：管理监听、在线连接表和广播路由；不直接管理单个 socket 的读写队列
@@ -18,9 +17,10 @@ private:
     //功能::收到客户端消息：打印并交给广播
     void onSessionMessage(SessionId sender_id, const protocol::Message& message);
     //功能::广播：遍历在线表，跳过发送者，发给其他所有客户端
-    void broadcast(SessionId sender_id,const protocol::Message& message);
+    void sendToUser(SessionId sender_id,const protocol::Message& message);
     //功能::登记在线表
     void addSession(SessionId session_id, const SessionPtr& session);
+
     //功能::移除在线表（客户端断开时）
     void removeSession(SessionId session_id);
 
@@ -30,8 +30,11 @@ private:
     asio::ip::tcp::socket m_pending_socket;   //功能::待接受 socket（成员保证异步期间存活）
 
     SessionId m_next_session_id {1};   //功能::连接 ID 计数器
-    std::unordered_map<SessionId,SessionPtr> m_sessions;   //功能::在线表：ID → Session
-
+    //功能::在线表：ID → Session
+    std::unordered_map<SessionId,SessionPtr> m_sessions;
+    // 服务端存储：用户名 -> 会话ID
+    std::unordered_map<std::string ,SessionId> m_username_to_session;
+    std::unordered_map<SessionId,std::string> m_session_to_username;
 
 };
 }

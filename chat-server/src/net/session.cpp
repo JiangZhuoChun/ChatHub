@@ -4,6 +4,8 @@
 #include <jwt-cpp/jwt.h>
 #include <jwt-cpp/traits/kazuho-picojson/defaults.h>
 
+#include "protocol/chat_payload.h"
+
 const std::string SECRET_KEY = "chathub-dev-secret";
 namespace net {
     //功能::构造函数：接收 socket、连接 ID、消息回调、断开回调，初始化成员
@@ -11,12 +13,14 @@ namespace net {
         asio::ip::tcp::socket  socket,
         SessionId session_id,
         MessageCallback on_message,
-        DisconnectCallback on_disconnect) :
+        DisconnectCallback on_disconnect,
+        AuthenticatedCallback on_authenticated) :
     m_socket( std::move(socket)),          //功能::转移 socket 所有权给 Session
     m_strand(m_socket.get_executor()),     //功能::用 socket 的执行器创建串行通道
     m_on_message(std::move(on_message)),   //功能::保存消息回调（收到完整消息时调用）
     m_id(session_id),                      //功能::保存连接 ID
-    m_on_disconnect(std::move(on_disconnect)) //功能::保存断开回调（断开时通知 Server）
+    m_on_disconnect(std::move(on_disconnect)),//功能::保存断开回调（断开时通知 Server）
+    m_on_authenticated(std::move(on_authenticated))//功能::保存认证成功回调
     {
     }
     //功能::日志：统一输出事件信息，方便排查多客户端问题
@@ -62,10 +66,10 @@ namespace net {
                 //功能::解码本次读取的字节，可能拼出多条完整消息
                 const auto result = m_decoder.append(m_read_buffer.data(),bytes_transferred,
                     [self](const protocol::Message &message) {
-                        self->processMessage(message);   //功能::把完整消息交给业务处理
+                        self->handlerMessage(message);   //功能::把完整消息交给业务处理
                     });
                 if (result != protocol::DecodeResult::ok) {   //功能::协议错误（非法magic/超长等）
-                    net::Session::log("协议错误，关闭当前连接");
+                    log("协议错误，关闭当前连接");
                     self->close();
                     return;
                 }
@@ -126,7 +130,7 @@ namespace net {
     }
 
     //功能::业务消息处理：按消息类型分派
-    void Session::processMessage(const protocol::Message&  message) {
+    void Session::handlerMessage(const protocol::Message&  message) {
         if (!m_authenticated) {
             if (message.type == protocol::MessageType::auth) {
                 if (std::string username; verifyJwt(message.body,username)) {
@@ -134,6 +138,9 @@ namespace net {
                     m_username = username;
                     //JWT认证成功,发送认证成功消息
                     send(protocol::MessageType::auth, R"({"ok":true})");
+                    if (m_on_authenticated) {
+                        m_on_authenticated(m_id,m_username);
+                    }
                 }else {
                     log("认证失败，关闭连接");
                     close();
@@ -145,9 +152,40 @@ namespace net {
             return;
         }
         switch (message.type) {
-            case protocol::MessageType::chat:   //功能::聊天消息：交给 Server 广播
+            case protocol::MessageType::chat://功能::聊天消息：交给 Server 广播
+            {
+                // Session 只负责接收与解码；聊天路由交给 Server 决定
+                const auto result = protocol::parseChatPayload(message.body);
+                if (result.error != protocol::ChatPayloadError::none) {
+                    std::string error_message = "聊天消息校验失败";
+                    switch (result.error) {
+                        case protocol::ChatPayloadError::none:
+                            break;
+                        case protocol::ChatPayloadError::invalid_json:
+                            error_message = "聊天 JSON 格式错误";
+                            break;
+                        case protocol::ChatPayloadError::missing_content:
+                            error_message = "聊天消息缺少 content";
+                            break;
+                        case protocol::ChatPayloadError::content_not_string:
+                            error_message = "content 必须是字符串";
+                            break;
+                        case protocol::ChatPayloadError::blank_content:
+                            error_message = "聊天内容不能为空";
+                            break;
+                        case protocol::ChatPayloadError::forbidden_sender_id:
+                            error_message = "客户端不能指定 sender_id";
+                            break;
+                        case protocol::ChatPayloadError::content_too_long:
+                            error_message = "聊天内容不能超过 200 字节";
+                            break;
+                    }
+                    // 正文校验失败只反馈给发送者
+                    send(protocol::MessageType::error,std::move(error_message));
+                }
                 m_on_message(m_id, message);
                 break;
+            }
             case protocol::MessageType::ping:   //功能::心跳请求：回复 pong
                 std::cout << "收到ping" << std::endl;
                 send(protocol::MessageType::pong,message.body);

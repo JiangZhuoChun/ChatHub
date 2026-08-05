@@ -30,7 +30,7 @@ void MainWindow::setUi() {
     ui->pwdEdit->setEchoMode(QLineEdit::Password);
 }
 
-void MainWindow::showMessage(const QString &message) {
+void MainWindow::showMessage(const QString &message) const {
     ui->messageLabel->setText(message);
 }
 
@@ -64,8 +64,8 @@ void MainWindow::connectSlots() {
 
 //槽函数实现
 void MainWindow::on_loginBtn_clicked() {
-    QString username = ui->userNameEdit->text().trimmed();
-    QString password = ui->pwdEdit->text();
+    const QString username = ui->userNameEdit->text().trimmed();
+    const QString password = ui->pwdEdit->text();
 
     if (username.isEmpty() || password.isEmpty()) {
         showMessage("用户名和密码不能为空");
@@ -83,8 +83,8 @@ void MainWindow::on_loginBtn_clicked() {
 }
 
 void MainWindow::on_registerBtn_clicked() {
-    QString username = ui->userNameEdit->text().trimmed();
-    QString password = ui->pwdEdit->text();
+    const QString username = ui->userNameEdit->text().trimmed();
+    const QString password = ui->pwdEdit->text();
 
     if (username.isEmpty() || password.isEmpty()) {
         showMessage("用户名和密码不能为空");
@@ -102,8 +102,8 @@ void MainWindow::on_registerBtn_clicked() {
 }
 
 //HTTP响应
-void MainWindow::onRequestFinish(int statusCode, const QByteArray &body) {
-    const RequestType request_tpye = m_pending_request;
+void MainWindow::onRequestFinish(const int statusCode, const QByteArray &body) {
+    const RequestType request_type = m_pending_request;
     setRequestBtnEnabled(true);
 
     //解析响应JSON
@@ -114,11 +114,11 @@ void MainWindow::onRequestFinish(int statusCode, const QByteArray &body) {
         return;
     }
 
-    QJsonObject obj = doc.object();
+    const QJsonObject obj = doc.object();
     const auto msg = obj.value("message").toString();
     const auto  error = obj.value("error").toString();
 
-    if (request_tpye == RequestType::login && statusCode == 200) {
+    if (request_type == RequestType::login && statusCode == 200) {
         const QString token = obj.value("token").toString();
         if (token.isEmpty()) {
             showMessage("登录失败，服务器没有返回token");
@@ -128,7 +128,7 @@ void MainWindow::onRequestFinish(int statusCode, const QByteArray &body) {
         m_chat->connectWithToken(token);
         return;
     }
-    if (request_tpye == RequestType::registerUser && statusCode == 201) {
+    if (request_type == RequestType::registerUser && statusCode == 201) {
         showMessage(msg.isEmpty() ? "注册成功" : msg);
         return;
     }
@@ -149,7 +149,7 @@ void MainWindow::onRequestTimeOut() {
     showMessage("HTTP 请求超时");
 }
 
-void MainWindow::setRequestBtnEnabled(bool  enabled) {
+void MainWindow::setRequestBtnEnabled(const bool  enabled) const {
     ui->loginBtn->setEnabled(enabled);
     ui->registerBtn->setEnabled(enabled);
 }

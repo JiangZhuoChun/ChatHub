@@ -1,9 +1,8 @@
 #include "HttpClient.h"
 #include <QTimer>
 #include <QMessageBox>
-#include <QDebug>
 
-void HttpClient::setTimeOut(unsigned int ms) {
+void HttpClient::setTimeOut(const unsigned int ms) {
     m_timeout_ms = ms;
 }
 
