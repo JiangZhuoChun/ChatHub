@@ -138,7 +138,7 @@ namespace net {
         obj["code"] = code;
         obj["message"] = message;
 
-        if (local_id.empty()) {
+        if (!local_id.empty()) {
             obj["local_id"] = local_id;
         }
         return boost::json::serialize(obj);
@@ -173,41 +173,87 @@ namespace net {
                 const auto result = protocol::parseChatPayload(message.body);
                 if (result.error != protocol::ChatPayloadError::none) {
                     std::string error_message = "聊天消息校验失败";
+                    std::string error_code = "chat_validation_failed";
                     switch (result.error) {
                         case protocol::ChatPayloadError::none:
                             break;
                         case protocol::ChatPayloadError::invalid_json:
                             error_message = "聊天 JSON 格式错误";
+                            error_code = "invalid_json";
                             break;
+
                         case protocol::ChatPayloadError::missing_content:
                             error_message = "聊天消息缺少 content";
+                            error_code = "missing_content";
                             break;
                         case protocol::ChatPayloadError::content_not_string:
                             error_message = "content 必须是字符串";
+                            error_code = "content_not_string";
                             break;
                         case protocol::ChatPayloadError::blank_content:
                             error_message = "聊天内容不能为空";
+                            error_code = "blank_content";
                             break;
                         case protocol::ChatPayloadError::forbidden_sender_id:
                             error_message = "客户端不能指定 sender_id";
+                            error_code = "forbidden_sender_id";
                             break;
                         case protocol::ChatPayloadError::content_too_long:
                             error_message = "聊天内容不能超过 1024 字节";
+                            error_code = "content_too_long";
                             break;
+
                         case protocol::ChatPayloadError::missing_local_id:
                             error_message = "聊天消息缺少 local_id";
+                            error_code = "missing_local_id";
                             break;
                         case protocol::ChatPayloadError::local_id_not_string:
                             error_message = "local_id 必须是字符串";
+                            error_code = "local_id_not_string";
                             break;
                         case protocol::ChatPayloadError::blank_local_id:
                             error_message = "local_id 不能为空";
+                            error_code = "blank_local_id";
                             break;
                         case protocol::ChatPayloadError::local_id_too_long:
                             error_message = "local_id 不能超过 64 字节";
+                            error_code = "local_id_too_long";
+                            break;
+
+                        case protocol::ChatPayloadError::missing_recipient:
+                            error_message = "聊天消息缺少 to";
+                            error_code = "missing_recipient";
+                            break;
+                        case protocol::ChatPayloadError::recipient_not_string:
+                            error_message = "to 必须是字符串";
+                            error_code = "recipient_not_string";
+                            break;
+                        case protocol::ChatPayloadError::blank_recipient:
+                            error_message = "to 不能为空";
+                            error_code = "blank_recipient";
+                            break;
+
+                        case protocol::ChatPayloadError::missing_send_at:
+                            error_message = "聊天消息缺少 send_at";
+                            error_code = "missing_send_at";
+                            break;
+
+                        case protocol::ChatPayloadError::send_at_not_string:
+                            error_message = "send_at 必须是字符串";
+                            error_code = "send_at_not_string";
+                            break;
+                        case protocol::ChatPayloadError::blank_send_at:
+                            error_message = "send_at 不能为空";
+                            error_code = "blank_send_at";
+                            break;
+                        case protocol::ChatPayloadError::send_at_too_long:
+                            error_message = "send_at 不能超过 64 字节";
+                            error_code = "send_at_too_long";
+                            break;
                     }
                     // 正文校验失败只反馈给发送者
-                    send(protocol::MessageType::error,std::move(error_message));
+                    send(protocol::MessageType::error,makeChatError(result.local_id,error_code,error_message));
+                    break;
                 }
                     m_on_message(m_id, message);
                     break;
@@ -223,6 +269,8 @@ namespace net {
                 std::cerr << "错误：" << message.body << std::endl;
                 break;
             case protocol::MessageType::auth:
+                break;
+            case protocol::MessageType::chat_ack:
                 break;
         }
 

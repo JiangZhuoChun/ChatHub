@@ -2,6 +2,7 @@
 #include <QObject>
 #include <QTcpSocket>
 #include <QAbstractSocket>
+#include <QDateTime>
 #include <QTimer>
 class ChatClient : public QObject {
     Q_OBJECT
@@ -13,7 +14,7 @@ public:
     void connectSlots();
     bool isAuthenticated() const;
 
-    void sendChatMessage(const QString &to, const QString &content);
+    void sendChatMessage(const QString &to, const QString &content,const QString &local_id = {});
 
 signals:
     // TCP 已连接，认证帧已进入发送缓冲区
@@ -27,14 +28,18 @@ signals:
     // 已认证后连接断开
     void disconnected();
     // 聊天消息发送失败
-    void chatSendFailed(const QString &local_id, const QString &reason);\
+    void chatSendFailed(const QString &local_id, const QString &reason);
     //处理没有 local_id 的普通系统错误
     void serverError(const QString &reason);
+
     //接收消息
     void chatMessageReceived(const QString &local_id,const QString &from,
         const QString &to,const QString &content, const QDateTime &send_at);
     // 聊天消息已进入发送缓冲区
-    void chatMessageQueued(const QString &to, const QString &content,const QString &local_id);
+    void chatMessageQueued(const QString &to, const QString &content,
+        const QString &local_id,const QDateTime &send_at);
+    //客户端确认
+    void chatMessageAccepted(const QString &local_id);
 
 
 private slots:
@@ -52,7 +57,7 @@ private:
     };
 
     static QByteArray  makeFrame(quint8 type, const QByteArray &body) ;
-    bool writeFrame(quint8 type, const QByteArray &body, QString error);
+    bool writeFrame(quint8 type, const QByteArray &body, QString &error);
     void sendAuthFrame();
     void sendPing();
     void processReceivedFrames();
@@ -62,12 +67,13 @@ private:
     void handleChatBody(const QByteArray &body);
     void handleErrorBody(const QByteArray &body);
     void handlePingBody(const QByteArray &body);
-    void handlePongBody(const QByteArray &body);
+    static void handlePongBody(const QByteArray &body);
+    void handleChatAckBody(const QByteArray &body);
 
-    QTcpSocket m_socket;
-    QString m_token;
-    QByteArray m_received_buffer;
-    QTimer m_connect_timer;
+    QTcpSocket m_socket{};
+    QString m_token{};
+    QByteArray m_received_buffer{};
+    QTimer m_connect_timer{};
     AuthState m_state = {AuthState::idle};
 };
 

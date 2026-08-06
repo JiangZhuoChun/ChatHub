@@ -11,7 +11,8 @@ namespace protocol {
         ping = 2,   //功能::心跳请求
         pong = 3,   //功能::心跳响应
         error = 4,  //功能::错误消息
-        auth = 5    //功能::认证消息
+        auth = 5,    //功能::认证消息
+        chat_ack = 6 // 功能::聊天消息确认
     };
     //功能::解码完成后的消息：只包含业务需要的 type 和 body，不含网络头
     struct Message {
@@ -47,6 +48,5 @@ namespace protocol {
     };
 
     //功能::编码：将业务消息编码为 [magic:2][version:1][type:1][length:4][body:N]
-    std::string makeFrame(MessageType type, const std::string_view body);
-
+    std::string makeFrame(MessageType type, std::string_view body);
 }

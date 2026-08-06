@@ -98,25 +98,49 @@ namespace net {
         if (payload.error != protocol::ChatPayloadError::none) {
             return;
         }
-        const auto target_it = m_username_to_session.find(payload.to);
         const auto sender_it = m_sessions.find(sender_id);
+        const auto sender_username_it = m_session_to_username.find(sender_id);
+        const auto target_it = m_username_to_session.find(payload.to);
+        if (sender_it == m_sessions.end()) {
+            return;
+        };
 
-        if (target_it == m_username_to_session.end()) {
-            if (sender_it == m_sessions.end()) {
-                const std::string error_body = makeRouteErrorBody(payload.local_id,"recipient_offline","接收者不在线");
-                sender_it->second->send(protocol::MessageType::error, error_body);
-            }
+        //错误处理，将错误信息返回给发送者
+        if (sender_username_it == m_session_to_username.end()) {
+            const std::string error_body =
+                makeRouteErrorBody(payload.local_id,"sender_not_registered","发送者会话尚未完成注册");
+            sender_it->second->send(protocol::MessageType::error, error_body);
             return;
         }
+        if (target_it == m_username_to_session.end()) {
+            const std::string error_body =
+                makeRouteErrorBody(payload.local_id,"recipient_offline","接收者不在线");
+            sender_it->second->send(protocol::MessageType::error, error_body);
+            return;
+        }
+        const auto recv_it = m_sessions.find(target_it->second);
+        if (recv_it == m_sessions.end()) {
+            const std::string error_body =
+                makeRouteErrorBody(payload.local_id,"recipient_offline","接收者连接已经断开");
+            sender_it->second->send(protocol::MessageType::error, error_body);
+            return;
+        }
+
+        //给接收者显示消息
         boost::json::object forwarded;
         forwarded["local_id"] = payload.local_id;
-        forwarded["from"] = m_session_to_username.at(sender_id);
+        forwarded["from"] = sender_username_it->second;
         forwarded["to"] = payload.to;
         forwarded["content"] = payload.content;
-
+        forwarded["send_at"] = payload.send_at;
         const std::string forward_body = boost::json::serialize(forwarded);
-        const auto recv_it = m_sessions.find(target_it->second);
         recv_it->second->send(protocol::MessageType::chat, forward_body);
+
+        //给发送者显示确认，更新"已被服务器接收"状态
+        boost::json::object ack;
+        ack["local_id"] = payload.local_id;
+        ack["status"] = "accepted";
+        sender_it->second->send(protocol::MessageType::chat_ack,boost::json::serialize(ack));
 
 
 

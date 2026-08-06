@@ -14,6 +14,7 @@ namespace {
     //功能::协议常量
     constexpr std::size_t kMaxChatContentBytes = 1024;
     constexpr std::size_t kMaxLocalIdLength = 64;
+    constexpr std::size_t kMaxSendAtLength = 64;
 }
 namespace protocol {
     chatPayloadResult parseChatPayload(const std::string_view& body) {
@@ -53,14 +54,32 @@ namespace protocol {
         if (!local_id->is_string()) {
             return {ChatPayloadError::local_id_not_string,{}};
         }
-        if (isBlank(local_id->as_string())) {
-            return {ChatPayloadError::blank_local_id,{}};
-        }
-        if (local_id->as_string().size() > kMaxLocalIdLength) {
-            return {ChatPayloadError::local_id_too_long,{}};
-        }
         const auto& json_local_id = local_id->as_string();
         const std::string local_id_str(json_local_id.data(),json_local_id.size());
+        if (isBlank(local_id_str)) {
+            return {ChatPayloadError::blank_local_id,{}};
+        }
+        if (local_id_str.size() > kMaxLocalIdLength) {
+            return {ChatPayloadError::local_id_too_long,{}};
+        }
+
+        // 校验发送时间
+        const auto* send_at = obj.if_contains("send_at");
+        if (!send_at) {
+            return {ChatPayloadError::missing_send_at,{},{},local_id_str};
+        }
+        if (!send_at->is_string()) {
+            return {ChatPayloadError::send_at_not_string,{},{},local_id_str};
+        }
+        const auto& json_send_at =  send_at->as_string();
+        const std::string send_at_str(json_send_at.data(),json_send_at.size());
+
+        if (isBlank(send_at_str)) {
+            return {ChatPayloadError::blank_send_at,{},{},local_id_str};
+        }
+        if (send_at_str.size() > kMaxSendAtLength) {
+            return {ChatPayloadError::send_at_too_long,{},{},local_id_str};
+        }
 
         // 校验聊天正文；长度使用 std::string::size()，单位是 UTF-8 字节数。
         const auto* content = obj.if_contains("content");
@@ -79,7 +98,10 @@ namespace protocol {
         if (text.size() > kMaxChatContentBytes) {
             return {ChatPayloadError::content_too_long,{}};
         }
-        return {ChatPayloadError::none,text,local_id_str};
+
+        //所有校验完成，成功返回结果
+        return {ChatPayloadError::none,
+            to_str,text,local_id_str,send_at_str};
     }
 
 }
