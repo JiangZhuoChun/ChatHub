@@ -1,11 +1,12 @@
+#include "chatclient.h"
 #include "logindialog.h"
 #include "mainwindow.h"
-#include "chatclient.h"
 
 #include <QApplication>
 
-int main(int argc, char *argv[])
-{
+// ==================== 模块：Qt 客户端启动入口 ====================
+// 功能：先运行登录对话框，认证成功后创建主聊天窗口并进入 Qt 事件循环。
+int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     ChatClient chat_client;
 

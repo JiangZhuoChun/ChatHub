@@ -1,74 +1,79 @@
-#include <iostream>
-
 #include "protocol/frame_decoder.h"
 
+#include <iostream>
 
-// //测试1.半包处理	makeFrame(chat,"Hello") 的前 3 字节先 append，剩余再 append
+// ==================== 模块：帧解码场景测试 ====================
+// 功能：验证半包分两次到达时，解码器只在正文完整后回调一条聊天消息。
 bool testEmptyChatFrame() {
-
     protocol::FrameDecoder decoder;
     std::vector<protocol::Message> received;
 
-    const auto frame = protocol::makeFrame(protocol::MessageType::chat,"Hello");
-    const auto on_message = [&received](const protocol::Message &message) {
-        received.push_back(message);
-    };
-    const auto first_result = decoder.append(frame.data(),3,on_message);
-    const bool first_passed = first_result
-        == protocol::DecodeResult::ok&& received.empty();
-    // 第二次补齐剩余字节后，回调应收到完整聊天消息。
-    const auto second_result = decoder.append(frame.data()+3,frame.size()-3,on_message);
-    const bool passed = first_passed
-    && second_result == protocol::DecodeResult::ok
-    && received.size() == 1
-    && received[0].type == protocol::MessageType::chat;
-    return passed;
+    const auto frame = protocol::makeFrame(protocol::MessageType::chat, "Hello");
+    const auto on_message =
+        // 功能：记录解码器回调的完整消息，供测试断言数量和类型。
+        [&received](const protocol::Message& message) {
+            received.push_back(message);
+        };
+    const auto first_result = decoder.append(frame.data(), 3, on_message);
+    const bool first_passed = first_result == protocol::DecodeResult::ok && received.empty();
+    const auto second_result =
+        decoder.append(frame.data() + 3, frame.size() - 3, on_message);
+    return first_passed && second_result == protocol::DecodeResult::ok &&
+           received.size() == 1 && received[0].type == protocol::MessageType::chat;
 }
-//2	粘包处理	两个 makeFrame 拼接成一段 append
+
+// 功能：验证同一次读取包含两帧时，解码器可以依次回调两条聊天消息。
 bool testStickyFrames() {
     protocol::FrameDecoder decoder;
     std::vector<protocol::Message> received;
-    const auto first = protocol::makeFrame(protocol::MessageType::chat,"Hello");
-    const auto second = protocol::makeFrame(protocol::MessageType::chat,"World");
-    std::string frame = first + second;
-    const auto on_message = [&received](const protocol::Message &message) {
-        received.push_back(message);
-    };
-    const auto result =decoder.append(frame.data(),frame.size(),on_message);
-    bool passed = result == protocol::DecodeResult::ok
-    && received.size() == 2
-    && received[0].type == protocol::MessageType::chat
-    && received[1].type == protocol::MessageType::chat
-    && received[0].body == "Hello"
-    && received[1].body == "World";
-    return passed;
+    const auto first = protocol::makeFrame(protocol::MessageType::chat, "Hello");
+    const auto second = protocol::makeFrame(protocol::MessageType::chat, "World");
+    const std::string frame = first + second;
+    const auto on_message =
+        // 功能：记录粘包解析出的每条完整消息，供测试验证顺序和正文。
+        [&received](const protocol::Message& message) {
+            received.push_back(message);
+        };
+    const auto result = decoder.append(frame.data(), frame.size(), on_message);
+    return result == protocol::DecodeResult::ok && received.size() == 2 &&
+           received[0].type == protocol::MessageType::chat &&
+           received[1].type == protocol::MessageType::chat &&
+           received[0].body == "Hello" && received[1].body == "World";
 }
-//3	非法 magic	makeFrame(chat,"Hi") 改第 1 字节为 \x00
+
+// 功能：验证帧魔数被篡改后，解码器返回 invalid_magic 且不交付消息。
 bool testInvalidMagic() {
     protocol::FrameDecoder decoder;
     std::vector<protocol::Message> received;
-    auto frame = protocol::makeFrame(protocol::MessageType::chat,"Hello");
+    auto frame = protocol::makeFrame(protocol::MessageType::chat, "Hello");
     frame[0] = '\x00';
-    const auto result = decoder.append(frame.data(),frame.size(),[&received](const protocol::Message &message) {
-        received.push_back(message);
-    });
-    bool passed = result == protocol::DecodeResult::invalid_magic
-    && received.empty();
-    return passed;
+    const auto result = decoder.append(
+        frame.data(), frame.size(),
+        // 功能：记录意外解码出的消息，确保非法魔数场景下回调不会发生。
+        [&received](const protocol::Message& message) {
+            received.push_back(message);
+        });
+    return result == protocol::DecodeResult::invalid_magic && received.empty();
 }
-//4	超长 body	makeFrame(chat, string(1025,'x'))
+
+// 功能：验证正文长度超过协议上限时，解码器返回 message_too_large 且不交付消息。
 bool testMaxBodyLength() {
     protocol::FrameDecoder decoder;
     std::vector<protocol::Message> received;
-    std::string body = std::string(1025,'x');
-    auto frame = protocol::makeFrame(protocol::MessageType::chat,body);
-    const auto result = decoder.append(frame.data(),frame.size(),[&received](const protocol::Message &message) {
-        received.push_back(message);
-    });
-    bool passed = result == protocol::DecodeResult::message_too_large && received.empty();
-    return passed;
+    const std::string body(1025, 'x');
+    const auto frame = protocol::makeFrame(protocol::MessageType::chat, body);
+    const auto result = decoder.append(
+        frame.data(), frame.size(),
+        // 功能：记录意外解码出的消息，确保超长正文场景下回调不会发生。
+        [&received](const protocol::Message& message) {
+            received.push_back(message);
+        });
+    return result == protocol::DecodeResult::message_too_large && received.empty();
 }
-bool runTest(const char* name, bool passed) {
+
+// ==================== 模块：测试结果汇总 ====================
+// 功能：输出单个测试用例的通过或失败结果，并返回其布尔状态。
+bool runTest(const char* name, const bool passed) {
     if (passed) {
         std::cout << "PASS: " << name << '\n';
         return true;
@@ -77,28 +82,33 @@ bool runTest(const char* name, bool passed) {
     std::cerr << "FAIL: " << name << '\n';
     return false;
 }
+
+// 功能：依次执行全部帧解码场景，并聚合最终测试结果。
 bool testAll() {
     bool all_pass = true;
-    if (!runTest("empty chat frame",testEmptyChatFrame())) {
+    if (!runTest("empty chat frame", testEmptyChatFrame())) {
         all_pass = false;
     }
-    if (!runTest("sticky frames",testStickyFrames())) {
+    if (!runTest("sticky frames", testStickyFrames())) {
         all_pass = false;
     }
-    if (!runTest("invalid magic",testInvalidMagic())) {
+    if (!runTest("invalid magic", testInvalidMagic())) {
         all_pass = false;
     }
-    if (!runTest("max body length",testMaxBodyLength())) {
+    if (!runTest("max body length", testMaxBodyLength())) {
         all_pass = false;
     }
-    return  all_pass;
+    return all_pass;
 }
+
+// ==================== 模块：帧解码测试入口 ====================
+// 功能：执行全部帧解码测试，并按结果返回进程成功或失败状态。
 int main() {
-    if (bool all_passed =testAll())
-    {
+    if (const bool all_passed = testAll()) {
         std::cout << "PASS: split chat frame\n";
         return EXIT_SUCCESS;
     }
+
     std::cerr << "FAIL: split chat frame\n";
     return EXIT_FAILURE;
 }

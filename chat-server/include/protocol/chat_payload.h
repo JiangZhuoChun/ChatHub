@@ -1,46 +1,52 @@
 #pragma once
+
 #include <string>
 #include <string_view>
-namespace protocol
-{
-// 业务层校验失败的原因，由 Session 转换成仅发给发送者的错误消息。
+
+namespace protocol {
+
+// ==================== 模块：聊天正文校验错误类型 ====================
+// 功能：枚举聊天 JSON 正文在字段存在性、类型和内容上的校验失败原因。
 enum class ChatPayloadError {
     none,
-    invalid_json,// json 解析失败
-//to
-    missing_recipient,// recipient 字段不存在
-    recipient_not_string,// recipient 字段不是字符串
-    blank_recipient,// recipient 字段为空
-//content
-    missing_content,// content 字段不存在
-    content_not_string,// content 字段不是字符串
-    blank_content,// content 字段为空
-    content_too_long,// content 字段过长
-//from
-    forbidden_sender_id,// 发送者 id 不允许
-//消息id
-    missing_local_id,// local_id 字段不存在
-    local_id_not_string,// local_id 字段不是字符串
-    blank_local_id,// local_id 字段为空
-    local_id_too_long,// local_id 字段过长
-//发送时间
+    invalid_json,
+
+    missing_recipient,
+    recipient_not_string,
+    blank_recipient,
+
+    missing_content,
+    content_not_string,
+    blank_content,
+    content_too_long,
+
+    forbidden_sender_id,
+
+    missing_local_id,
+    local_id_not_string,
+    blank_local_id,
+    local_id_too_long,
+
     missing_send_at,
     send_at_not_string,
     blank_send_at,
     send_at_too_long,
 };
 
-    // chatPayloadResult 只保存聊天业务层已经通过校验的字段。
-    // error 不为 none 时，to/content/local_id 仅用于错误关联，不应继续路由。
-    struct chatPayloadResult {
-        //只有error为none,才保存已校验的聊天正文
-        ChatPayloadError error{ChatPayloadError::none};
-        std::string to;
-        std::string content;
-        std::string local_id;
-        std::string send_at;
-    };
+// ==================== 模块：聊天正文校验结果 ====================
+// 功能：保存校验成功的聊天字段，或保存失败原因及可用于关联错误的 local_id。
+struct chatPayloadResult {
+    // 功能：标识本次正文校验是否成功；只有值为 none 时其他业务字段才可路由。
+    ChatPayloadError error{ChatPayloadError::none};
+    std::string to;
+    std::string content;
+    std::string local_id;
+    std::string send_at;
+};
 
-    //校验chat帧的JSON正文及业务字段
-    chatPayloadResult parseChatPayload(const std::string_view& body);
-}
+// ==================== 模块：聊天 JSON 正文校验 ====================
+// 功能：解析并校验聊天帧 JSON 正文，返回可安全用于服务端路由的字段。
+// 失败：字段缺失、类型错误、空白、超长或客户端伪造 sender_id 时返回相应错误。
+chatPayloadResult parseChatPayload(std::string_view body);
+
+} // protocol 命名空间结束
