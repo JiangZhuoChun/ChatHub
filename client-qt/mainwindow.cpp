@@ -5,9 +5,9 @@
 
 #include <QLabel>
 #include <QStyle>
-
+#include  <QLayoutItem>
 #include <utility>
-
+#include <QListWidgetItem>
 // ==================== 模块：窗口生命周期 ====================
 // 功能：创建主窗口、初始化界面状态，并连接用户操作和聊天客户端信号。
 MainWindow::MainWindow(ChatClient* chat_client, QString username, QWidget* parent)
@@ -45,6 +45,8 @@ void MainWindow::connectSlots() {
     connect(m_chat, &ChatClient::chatMessageAccepted, this, &MainWindow::onChatMessageAccepted);
     connect(m_chat, &ChatClient::chatSendFailed, this, &MainWindow::onChatSendFailed);
     connect(m_chat, &ChatClient::chatMessageReceived, this, &MainWindow::onChatMessageReceived);
+    connect(ui->conversationList, &QListWidget::itemClicked, this, &MainWindow::onConversationItemClicked);
+
     connect(m_chat, &ChatClient::authSucceeded, this,
             // 功能：认证成功后将状态标签和发送按钮切换为可用状态。
             [this] {
@@ -66,6 +68,87 @@ void MainWindow::updateConnectionState(const bool connected, const QString& mess
     ui->sendBtn->setEnabled(connected);
 }
 
+void MainWindow::ensureConversationItem(const QString& peer) const {
+    const auto items =ui->conversationList->findItems(peer,Qt::MatchExactly);
+    if (items.isEmpty()) {
+        ui->conversationList->addItem(peer);
+    }
+}
+//安全清理动态气泡
+void MainWindow::clearMessageBubbles() const {
+    while (ui->messageLayout->count() >1) {
+        const QLayoutItem* item = ui->messageLayout->takeAt(1);
+        if (item == nullptr) {
+            break;
+        }
+
+        delete item->widget();
+        delete item;
+    }
+}
+//重新渲染当前会话
+void MainWindow::renderCurrentConversation() {
+
+    clearMessageBubbles();
+
+    if (m_currentPeer.isEmpty()) {
+        return;
+    }
+
+    //使用 constFind() 读取 QHash：它不会像 operator[] 一样在键不存在时意外创建空会话。
+    const auto chatMessage_it = m_conversations.constFind(m_currentPeer);
+    if (chatMessage_it == m_conversations.end()) {
+        return;
+    }
+
+    for (const ChatMessage& message :chatMessage_it.value()) {
+        appendMessageBubble(message.local_id,
+                            message.from,
+                            message.to,
+                            message.content,
+                            message.send_at,
+                            message.status,
+                            message.failure_reason);
+    }
+}
+
+// 功能：将消息状态枚举转换为字符串。
+QString MainWindow::chatMessageStatusTostring(ChatMessageStatus status) {
+    switch (status) {
+        case ChatMessageStatus::Accepted:
+            return QStringLiteral("accepted");
+        case ChatMessageStatus::Failed:
+            return QStringLiteral("failed");
+        case ChatMessageStatus::Received:
+            return QStringLiteral("received");
+        case ChatMessageStatus::Sending:
+            return QStringLiteral("sending");
+        default:
+            return QStringLiteral("unknown");
+    }
+}
+
+ChatMessage * MainWindow::findMessageByLocalId(const QString &local_id) {
+
+    if (local_id.isEmpty()) {
+        return nullptr;
+    }
+
+    for (auto conversation_it = m_conversations.begin();
+        conversation_it != m_conversations.end(); ++conversation_it)
+    {
+        for (ChatMessage& message : conversation_it.value())
+        {
+            if (message.local_id == local_id) {
+                return &message;
+            }
+        }
+    }
+
+    return nullptr;
+
+}
+
 // ==================== 模块：窗口与连接状态 ====================
 // 功能：连接断开时禁用发送按钮，并提示用户重新登录。
 void MainWindow::onDisconnected() const {
@@ -74,93 +157,162 @@ void MainWindow::onDisconnected() const {
 
 // ==================== 模块：用户发送操作 ====================
 // 功能：读取当前输入框中的接收者和正文，并请求 ChatClient 发送消息。
-void MainWindow::onSendClicked() {
+void MainWindow::onSendClicked() const {
+    // 手填接收者优先；未填写时才使用当前正在查看的会话联系人。
     const QString to = ui->recipientEdit->text().trimmed();
+    QString real_to = to;
     const QString content = ui->messageEdit->toPlainText();
-    m_chat->sendChatMessage(to, content);
+    if (to.isEmpty()) {
+        if (m_currentPeer.isEmpty()) {
+            statusBar()->showMessage("请选择联系人或输入接收者");
+            return;
+        }
+        real_to = m_currentPeer;
+    }
+
+    // 与 ChatClient 保持一致：空字符串、空格和换行都不允许进入发送链路。
+    // 仅用 trimmed() 判断，不修改真正发出的正文，保留用户输入的有效首尾空格。
+    if (content.trimmed().isEmpty()) {
+        statusBar()->showMessage("信息不能为空");
+        return;
+    }
+
+    // 所有校验通过后只发送一次，避免产生无关联的失败 local_id。
+    m_chat->sendChatMessage(real_to, content);
 }
 
 // ==================== 模块：消息发送状态处理 ====================
 // 功能：为已进入发送缓冲区的消息创建气泡，或在重试时恢复已有气泡的发送状态。
 void MainWindow::onChatMessageQueued(const QString& to, const QString& content,
                                      const QString& local_id, const QDateTime& send_at) {
-    const auto it = m_pendingMessages.find(local_id);
-    if (it != m_pendingMessages.end()) {
-        it->widgets.retryBtn->setVisible(false);
-        it->widgets.bubble->setProperty("status", "sending");
-        return;
+    if (auto* message = findMessageByLocalId(local_id);
+        message != nullptr)
+    {
+        message->status = ChatMessageStatus::Sending;
+        message->failure_reason.clear();
+    }
+    else
+    {
+        ChatMessage chatMessage;
+        chatMessage.local_id = local_id;
+        chatMessage.content = content;
+        chatMessage.from = m_username;
+        chatMessage.to = to;
+        chatMessage.send_at = send_at;
+        chatMessage.status = ChatMessageStatus::Sending;
+
+        m_conversations[chatMessage.to].append(chatMessage);
+        ensureConversationItem(chatMessage.to);
     }
 
-    const MessageWidgets widgets = appendMessageBubble(
-        local_id, m_username, to, content, send_at, QStringLiteral("sending"));
-    m_pendingMessages.insert(local_id, PendingMessage{widgets, to, content});
+    if (m_currentPeer == to) {
+        renderCurrentConversation();
+    }
+
     statusBar()->showMessage(QStringLiteral("消息发送中..."));
 }
 
 // 功能：将已被服务器接受的消息改为成功状态，并移除其待确认记录。
 void MainWindow::onChatMessageAccepted(const QString& local_id) {
-    const auto it = m_pendingMessages.find(local_id);
-    if (it == m_pendingMessages.end()) {
+    ChatMessage* message = findMessageByLocalId(local_id);
+    if (message == nullptr)
+    {
         statusBar()->showMessage(QStringLiteral("收到未知消息确认"));
         return;
     }
 
-    it->widgets.retryBtn->setVisible(false);
-    it->widgets.bubble->setProperty("status", "accepted");
-    it->widgets.bubble->style()->unpolish(it->widgets.bubble);
-    it->widgets.bubble->style()->polish(it->widgets.bubble);
+    message->status = ChatMessageStatus::Accepted;
+    message->failure_reason.clear();
 
-    m_pendingMessages.erase(it);
-    statusBar()->showMessage(QStringLiteral("服务器已接收:") + local_id);
+    if (m_currentPeer == message->to) {
+        renderCurrentConversation();
+    }
+    statusBar()->showMessage(QStringLiteral("服务器已接收消息"));
 }
 
 // 功能：将 local_id 对应待确认消息标记为失败，显示原因并允许用户重试。
 void MainWindow::onChatSendFailed(const QString& local_id, const QString& reason) {
-    const auto it = m_pendingMessages.find(local_id);
-    if (it != m_pendingMessages.end()) {
-        it->widgets.retryBtn->setVisible(true);
-        it->widgets.bubble->setProperty("status", "failed");
-        it->widgets.bubble->setToolTip(reason);
-        it->widgets.bubble->style()->unpolish(it->widgets.bubble);
-        it->widgets.bubble->style()->polish(it->widgets.bubble);
+    ChatMessage* message = findMessageByLocalId(local_id);
+    if (message == nullptr) {
+        statusBar()->showMessage(QStringLiteral("未知消息发送失败：") + reason);
+        return;
     }
-    statusBar()->showMessage(QStringLiteral("消息发送失败:") + reason);
+    message->status = ChatMessageStatus::Failed;
+    message->failure_reason = reason;
+
+    if (m_currentPeer == message->to) {
+        renderCurrentConversation();
+    }
+    statusBar()->showMessage(QStringLiteral("消息发送失败：") + reason);
 }
 
 // 功能：读取待确认表中的原消息，用相同 local_id 请求 ChatClient 再次发送。
 void MainWindow::onRetryClicked(const QString& local_id) {
-    const auto it = m_pendingMessages.find(local_id);
-    if (it == m_pendingMessages.end()) {
+    ChatMessage* message = findMessageByLocalId(local_id);
+    if (message == nullptr) {
+        statusBar()->showMessage(QStringLiteral("未找到需要重试的消息"));
         return;
     }
+    // 网络调用可能同步触发信号，因此先复制，后续不再使用 message 指针。
+    const auto to = message->to;
+    const auto content = message->content;
 
-    it->widgets.retryBtn->setVisible(false);
-    it->widgets.bubble->setProperty("status", "sending");
-    it->widgets.bubble->style()->unpolish(it->widgets.bubble);
-    it->widgets.bubble->style()->polish(it->widgets.bubble);
-    m_chat->sendChatMessage(it->to, it->content, local_id);
+    message->status = ChatMessageStatus::Sending;
+    message->failure_reason.clear();
+
+    if (m_currentPeer == to) {
+        renderCurrentConversation();
+    }
+
+    m_chat->sendChatMessage(to,content,local_id);
+
 }
 
 // ==================== 模块：接收消息处理 ====================
 // 功能：将服务端转发的消息渲染为收到状态的聊天气泡。
 void MainWindow::onChatMessageReceived(const QString& local_id, const QString& from,
                                        const QString& to, const QString& content,
-                                       const QDateTime& send_at) {
-    appendMessageBubble(local_id, from, to, content, send_at, QStringLiteral("received"));
+                                       const QDateTime& send_at)
+{
+    ChatMessage message;
+    message.local_id = local_id;
+    message.content = content;
+    message.from = from;
+    message.to = to;
+    message.send_at = send_at;
+    message.status = ChatMessageStatus::Received;
+
+
+    m_conversations[from].append(message);
+    ensureConversationItem(from);
+
+    if (m_currentPeer == from) {
+        renderCurrentConversation();
+    }
+}
+
+void MainWindow::onConversationItemClicked(const QListWidgetItem *item) {
+    if (item == nullptr) {
+        return;
+    }
+    m_currentPeer = item->text();
+    ui->peerNameLabel->setText(m_currentPeer);
+    renderCurrentConversation();
 }
 
 // ==================== 模块：消息气泡渲染 ====================
 // 功能：创建消息行、正文标签、隐藏的失败重试按钮，并保存消息元数据到控件属性。
-MainWindow::MessageWidgets MainWindow::appendMessageBubble(
+void MainWindow::appendMessageBubble(
     const QString& local_id, const QString& from, const QString& to,
-    const QString& content, const QDateTime& send_at, const QString& status) {
-    MessageWidgets widgets;
+    const QString& content, const QDateTime& send_at, const ChatMessageStatus& status,
+    const QString& failure_reason) {
 
-    QWidget* row = new QWidget(ui->messageContainer);
-    QHBoxLayout* row_layout = new QHBoxLayout(row);
+
+    auto* row = new QWidget(ui->messageContainer);
+    auto* row_layout = new QHBoxLayout(row);
     row_layout->setContentsMargins(0, 0, 0, 0);
 
-    QLabel* label = new QLabel(row);
+    auto* label = new QLabel(row);
     label->setWordWrap(true);
     label->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
@@ -176,9 +328,10 @@ MainWindow::MessageWidgets MainWindow::appendMessageBubble(
     label->setProperty("local_id", local_id);
     label->setProperty("from", from);
     label->setProperty("to", to);
-    label->setProperty("status", status);
+    const QString status_text = chatMessageStatusTostring(status);
+    label->setProperty("status", status_text);
 
-    QToolButton* retry_button = new QToolButton(row);
+    auto* retry_button = new QToolButton(row);
     connect(retry_button, &QToolButton::clicked, this,
             // 功能：用户点击失败标记时，重试该按钮所属 local_id 的消息。
             [this, local_id] {
@@ -186,8 +339,12 @@ MainWindow::MessageWidgets MainWindow::appendMessageBubble(
             });
     retry_button->setText(QStringLiteral("!"));
     retry_button->setFixedSize(18, 18);
-    retry_button->setVisible(false);
-    retry_button->setToolTip(QStringLiteral("消息发送失败"));
+
+    const bool is_failed = status == ChatMessageStatus::Failed;
+    retry_button->setVisible(is_failed);
+    retry_button->setToolTip(
+    failure_reason.isEmpty()? QStringLiteral("消息发送失败"): failure_reason);
+
     retry_button->setStyleSheet(
         QStringLiteral(
             "QToolButton {"
@@ -206,8 +363,5 @@ MainWindow::MessageWidgets MainWindow::appendMessageBubble(
     ui->messageLayout->addWidget(row, 0, alignment);
     ui->messageScrollArea->ensureWidgetVisible(row);
 
-    widgets.row = row;
-    widgets.bubble = label;
-    widgets.retryBtn = retry_button;
-    return widgets;
+
 }

@@ -6,14 +6,34 @@
 #include <QMainWindow>
 #include <QString>
 #include <QToolButton>
+#include <QList>
 
 class ChatClient;
 class QLabel;
 class QWidget;
+class QListWidgetItem;
 
 namespace Ui {
 class MainWindow;
 }
+
+enum class ChatMessageStatus {
+    Sending,
+    Accepted,
+    Failed,
+    Received,
+};
+
+//功能:建立会话数据模型,聊天信息构成
+struct ChatMessage {
+    QString local_id;
+    QString from;
+    QString to;
+    QString content;
+    QDateTime send_at;
+    ChatMessageStatus status {ChatMessageStatus::Received};
+    QString failure_reason;
+};
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -32,8 +52,8 @@ private slots:
     void onDisconnected() const;
 
     // ==================== 模块：用户发送操作 ====================
-    // 功能：读取接收者和输入框正文，并交给 ChatClient 发送。
-    void onSendClicked();
+    // 功能：手填接收者优先，否则回退当前会话；校验通过后只交给 ChatClient 发送一次。
+    void onSendClicked() const;
 
     // ==================== 模块：消息发送状态处理 ====================
     // 功能：为已写入发送缓冲区的消息创建或恢复待确认气泡。
@@ -55,21 +75,9 @@ private slots:
                                const QString& to, const QString& content,
                                const QDateTime& send_at);
 
-private:
-    // ==================== 模块：消息气泡与待确认类型 ====================
-    // 功能：保存一条消息气泡所在行、正文标签和失败重试按钮。
-    struct MessageWidgets {
-        QWidget* row = nullptr;
-        QLabel* bubble = nullptr;
-        QToolButton* retryBtn = nullptr;
-    };
+    void onConversationItemClicked(const QListWidgetItem* item);
 
-    // 功能：保存尚未被服务端确认的消息及其重试所需数据。
-    struct PendingMessage {
-        MessageWidgets widgets;
-        QString to;
-        QString content;
-    };
+private:
 
     // ==================== 模块：窗口初始化与连接状态辅助 ====================
     // 功能：设置窗口尺寸、当前用户、默认会话提示和发送按钮初始状态。
@@ -81,11 +89,23 @@ private:
     // 功能：更新连接状态标签的文本、样式属性和发送按钮可用状态。
     void updateConnectionState(bool connected, const QString& message) const;
 
+    void ensureConversationItem(const QString& peer) const;
+
+    void clearMessageBubbles() const;
+
+    void renderCurrentConversation();
+
+    // 功能：将消息状态转换为 QSS 使用的字符串属性。
+    static QString chatMessageStatusTostring(ChatMessageStatus status);
+
+    ChatMessage* findMessageByLocalId(const QString& local_id);
+
     // ==================== 模块：消息气泡渲染 ====================
     // 功能：创建带发送者、正文、时间、状态属性和重试按钮的聊天气泡。
-    MessageWidgets appendMessageBubble(const QString& local_id, const QString& from,
+    void appendMessageBubble(const QString& local_id, const QString& from,
                                        const QString& to, const QString& content,
-                                       const QDateTime& send_at, const QString& status);
+                                       const QDateTime& send_at, const ChatMessageStatus& status,
+                                       const QString& failure_reason);
 
     // ==================== 模块：界面与当前用户依赖 ====================
     // 功能：保存 Qt 设计器生成的界面对象，由析构函数释放。
@@ -98,6 +118,7 @@ private:
     QString m_username;
 
     // ==================== 模块：待确认消息状态 ====================
-    // 功能：按 local_id 保存待服务器确认的气泡、接收者和正文，支持失败重试。
-    QHash<QString, PendingMessage> m_pendingMessages;
+    //与某个联系人的全部消息---联系人 → 消息列表
+    QHash<QString,QList<ChatMessage>> m_conversations;
+    QString m_currentPeer;//当前右侧正在显示谁
 };
