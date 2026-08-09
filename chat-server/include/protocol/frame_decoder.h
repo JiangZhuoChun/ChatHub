@@ -1,6 +1,7 @@
 #pragma once
 
-#include <cstdint>
+#include "protocol/chat_protocol.h"
+
 #include <functional>
 #include <string>
 #include <string_view>
@@ -9,19 +10,11 @@
 namespace protocol {
 
 // ==================== 模块：协议消息类型与解码结果 ====================
-// 功能：定义帧头 type 字段允许的业务消息类型。
-enum class MessageType : std::uint8_t {
-    chat = 1,
-    ping = 2,
-    pong = 3,
-    error = 4,
-    auth = 5,
-    chat_ack = 6
-};
-
 // 功能：保存解码完成后的业务消息，不包含网络帧头。
 struct Message {
+    // 功能：保存解码出的协议消息类型，供上层按类型分派正文。
     MessageType type;
+    // 功能：保存解码出的原始正文，不包含协议帧头。
     std::string body;
 };
 
@@ -37,12 +30,6 @@ enum class DecodeResult {
 // ==================== 模块：帧解码器接口与缓存 ====================
 class FrameDecoder {
 public:
-    // 功能：定义 ChatHub 帧格式固定使用的魔数、版本、帧头长度和正文上限。
-    static constexpr std::uint16_t kMagic = 0x4348;
-    static constexpr std::uint8_t kVersion = 1;
-    static constexpr std::size_t kHeaderLength = 8;
-    static constexpr std::size_t kMaxBodyLength = 1024;
-
     // 功能：定义每解码出一条完整消息时调用的上层处理回调。
     using MessageHandler = std::function<void(const Message&)>;
 

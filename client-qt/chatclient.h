@@ -137,7 +137,9 @@ private:
     void handleChatAckBody(const QByteArray& body);
 
     // ==================== 模块：网络资源 ====================
+    // 功能：维护与 chat-server 的 TCP 连接，并产生连接与读写事件。
     QTcpSocket m_socket;
+    // 功能：限制 TCP 建连阶段的最长等待时间。
     QTimer m_connect_timer;
 
     // ==================== 模块：会话与接收缓存状态 ====================

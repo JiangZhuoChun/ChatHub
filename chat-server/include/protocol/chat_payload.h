@@ -38,9 +38,13 @@ enum class ChatPayloadError {
 struct chatPayloadResult {
     // 功能：标识本次正文校验是否成功；只有值为 none 时其他业务字段才可路由。
     ChatPayloadError error{ChatPayloadError::none};
+    // 功能：保存已校验的聊天接收者用户名。
     std::string to;
+    // 功能：保存已校验的聊天文本内容。
     std::string content;
+    // 功能：保存用于关联确认、失败与重试的客户端本地消息标识。
     std::string local_id;
+    // 功能：保存客户端提交的 ISO 格式发送时间。
     std::string send_at;
 };
 

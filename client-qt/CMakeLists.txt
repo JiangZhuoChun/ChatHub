@@ -17,6 +17,11 @@ qt_add_executable(client-qt
     logindialog.ui
     chatclient.cpp
     chatclient.h
+    chat_types.h
+)
+
+target_include_directories(client-qt PRIVATE
+    ${CMAKE_SOURCE_DIR}/chat-server/include
 )
 
 target_link_libraries(client-qt

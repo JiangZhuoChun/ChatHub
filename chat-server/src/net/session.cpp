@@ -89,7 +89,7 @@ void Session::doRead() {
 // ==================== 模块：串行写队列 ====================
 // 功能：校验正文大小后将完整帧放入队列；空队列首次入队时启动异步写。
 void Session::enqueueAndWrite(const protocol::MessageType type, const std::string& body) {
-    if (body.size() > protocol::FrameDecoder::kMaxBodyLength) {
+    if (body.size() > protocol::kMaxFrameBodyLength) {
         std::cerr << "错误：body长度超出限制" << std::endl;
         return;
     }
@@ -136,6 +136,20 @@ void Session::writeFrame() {
 }
 
 // ==================== 模块：认证与业务消息分派 ====================
+// 功能：使用服务端密钥验证 HS256 令牌，并从载荷中提取用户名。
+// 失败：令牌解码、签名校验或用户名提取抛出异常时返回 false。
+bool Session::verifyJwt(const std::string& token, std::string& out_username) {
+    try {
+        const auto decoded = jwt::decode(token);
+        const auto verifier = jwt::verify().allow_algorithm(jwt::algorithm::hs256{SECRET_KEY});
+        verifier.verify(decoded);
+        out_username = decoded.get_payload_claim("username").as_string();
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 // 功能：构造包含聊天错误范围、错误码、错误说明和可选 local_id 的 JSON 正文。
 std::string Session::makeChatError(const std::string& local_id, const std::string& code,
                                    const std::string& message) {
@@ -273,20 +287,6 @@ void Session::handlerMessage(const protocol::Message& message) {
         break;
     case protocol::MessageType::chat_ack:
         break;
-    }
-}
-
-// 功能：使用服务端密钥验证 HS256 令牌，并从载荷中提取用户名。
-// 失败：令牌解码、签名校验或用户名提取抛出异常时返回 false。
-bool Session::verifyJwt(const std::string& token, std::string& out_username) {
-    try {
-        const auto decoded = jwt::decode(token);
-        const auto verifier = jwt::verify().allow_algorithm(jwt::algorithm::hs256{SECRET_KEY});
-        verifier.verify(decoded);
-        out_username = decoded.get_payload_claim("username").as_string();
-        return true;
-    } catch (const std::exception&) {
-        return false;
     }
 }
 

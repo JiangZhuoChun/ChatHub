@@ -19,12 +19,6 @@ std::uint32_t readUint32BigEndian(const char* data) {
     return (byte0 << 24) | (byte1 << 16) | (byte2 << 8) | byte3;
 }
 
-// 功能：判断帧头中的原始类型值是否属于当前协议支持的消息类型。
-bool isKnownMessageType(std::uint8_t raw_type) {
-    return raw_type >= static_cast<std::uint8_t>(protocol::MessageType::chat) &&
-           raw_type <= static_cast<std::uint8_t>(protocol::MessageType::chat_ack);
-}
-
 } // 匿名命名空间结束
 
 namespace protocol {
@@ -35,17 +29,17 @@ namespace protocol {
 DecodeResult FrameDecoder::append(const char* data, std::size_t size, const MessageHandler& on_message) {
     m_cache.insert(m_cache.end(), data, data + size);
 
-    while (m_cache.size() >= kHeaderLength) {
+    while (m_cache.size() >= kFrameHeaderLength) {
         const auto magic = readUint16BigEndian(m_cache.data());
         const auto version = static_cast<std::uint8_t>(static_cast<unsigned char>(m_cache[2]));
         const auto raw_type = static_cast<std::uint8_t>(static_cast<unsigned char>(m_cache[3]));
         const auto body_length = readUint32BigEndian(m_cache.data() + 4);
 
-        if (magic != kMagic) {
+        if (magic != kFrameMagic) {
             m_cache.clear();
             return DecodeResult::invalid_magic;
         }
-        if (version != kVersion) {
+        if (version != kProtocolVersion) {
             m_cache.clear();
             return DecodeResult::unsupported_version;
         }
@@ -53,19 +47,19 @@ DecodeResult FrameDecoder::append(const char* data, std::size_t size, const Mess
             m_cache.clear();
             return DecodeResult::unknown_message_type;
         }
-        if (body_length > kMaxBodyLength) {
+        if (body_length > kMaxFrameBodyLength) {
             m_cache.clear();
             return DecodeResult::message_too_large;
         }
 
-        const auto frame_length = kHeaderLength + body_length;
+        const auto frame_length = kFrameHeaderLength + body_length;
         if (m_cache.size() < frame_length) {
             return DecodeResult::ok;
         }
 
         Message message{
             static_cast<MessageType>(raw_type),
-            std::string(m_cache.data() + kHeaderLength, body_length)
+            std::string(m_cache.data() + kFrameHeaderLength, body_length)
         };
         m_cache.erase(m_cache.begin(), m_cache.begin() + frame_length);
         on_message(message);
@@ -78,11 +72,11 @@ DecodeResult FrameDecoder::append(const char* data, std::size_t size, const Mess
 // 功能：按照协议规定的大端序将消息类型和正文组装成完整帧。
 std::string makeFrame(MessageType type, const std::string_view body) {
     const auto body_length = static_cast<std::uint32_t>(body.size());
-    std::string frame(FrameDecoder::kHeaderLength, '\0');
+    std::string frame(kFrameHeaderLength, '\0');
 
-    frame[0] = static_cast<char>((FrameDecoder::kMagic >> 8) & 0xFFU);
-    frame[1] = static_cast<char>(FrameDecoder::kMagic & 0xFFU);
-    frame[2] = FrameDecoder::kVersion;
+    frame[0] = static_cast<char>((kFrameMagic >> 8) & 0xFFU);
+    frame[1] = static_cast<char>(kFrameMagic & 0xFFU);
+    frame[2] = kProtocolVersion;
     frame[3] = static_cast<char>(type);
     frame[4] = static_cast<char>((body_length >> 24U) & 0xFFU);
     frame[5] = static_cast<char>((body_length >> 16U) & 0xFFU);

@@ -1,32 +1,11 @@
 #include "chatclient.h"
 
+#include "protocol/chat_protocol.h"
+
 #include <QHostAddress>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QUuid>
-
-namespace {
-
-// ==================== 模块：协议常量与类型校验 ====================
-constexpr int kHeaderLength = 8;
-constexpr quint16 kMagic = 0x4348;
-constexpr quint8 kVersion = 1;
-
-constexpr quint8 kChatType = 1;
-constexpr quint8 kPingType = 2;
-constexpr quint8 kPongType = 3;
-constexpr quint8 kErrorType = 4;
-constexpr quint8 kAuthType = 5;
-constexpr quint8 kChatAckType = 6;
-
-constexpr quint32 kMaxBodyLength = 1024;
-
-// 功能：判断原始 type 值是否属于当前客户端支持的协议消息类型。
-bool isKnownType(const quint8 type) {
-    return type >= kChatType && type <= kChatAckType;
-}
-
-} // 匿名命名空间结束
 
 // ==================== 模块：生命周期 ====================
 // 功能：创建套接字和连接计时器，并完成所有内部信号槽连接。
@@ -99,7 +78,7 @@ void ChatClient::sendChatMessage(const QString& to, const QString& content, cons
     const QByteArray body = QJsonDocument(object).toJson(QJsonDocument::Compact);
 
     QString error;
-    if (!writeFrame(kChatType, body, error)) {
+    if (!writeFrame(static_cast<quint8>(protocol::MessageType::chat), body, error)) {
         emit chatSendFailed(actual_local_id, error);
         return;
     }
@@ -180,10 +159,10 @@ QByteArray ChatClient::makeFrame(const quint8 type, const QByteArray& body) {
     QByteArray frame;
     const auto length = static_cast<quint32>(body.size());
 
-    frame.reserve(kHeaderLength + body.size());
-    frame.append(static_cast<char>(kMagic >> 8));
-    frame.append(static_cast<char>(kMagic & 0xFF));
-    frame.append(static_cast<char>(kVersion));
+    frame.reserve(static_cast<int>(protocol::kFrameHeaderLength) + body.size());
+    frame.append(static_cast<char>(protocol::kFrameMagic >> 8));
+    frame.append(static_cast<char>(protocol::kFrameMagic & 0xFF));
+    frame.append(static_cast<char>(protocol::kProtocolVersion));
     frame.append(static_cast<char>(type));
     frame.append(static_cast<char>((length >> 24) & 0xFF));
     frame.append(static_cast<char>((length >> 16) & 0xFF));
@@ -198,7 +177,7 @@ QByteArray ChatClient::makeFrame(const quint8 type, const QByteArray& body) {
 // 失败：正文超长、套接字未连接或写入失败时返回 false，并写入错误输出参数。
 bool ChatClient::writeFrame(const quint8 type, const QByteArray& body, QString& error) {
     error.clear();
-    if (body.size() > static_cast<int>(kMaxBodyLength)) {
+    if (body.size() > static_cast<int>(protocol::kMaxFrameBodyLength)) {
         error = QStringLiteral("消息体超过协议允许的长度");
         return false;
     }
@@ -219,7 +198,7 @@ bool ChatClient::writeFrame(const quint8 type, const QByteArray& body, QString& 
 void ChatClient::sendAuthFrame() {
     const QByteArray body = m_token.toUtf8();
     QString error;
-    if (!writeFrame(kAuthType, body, error)) {
+    if (!writeFrame(static_cast<quint8>(protocol::MessageType::auth), body, error)) {
         m_state = AuthState::idle;
         emit authFailed(QStringLiteral("认证帧发送失败：") + error);
         return;
@@ -236,7 +215,7 @@ void ChatClient::sendPing() {
     }
 
     QString error;
-    if (!writeFrame(kPingType, {}, error)) {
+    if (!writeFrame(static_cast<quint8>(protocol::MessageType::ping), {}, error)) {
         m_socket.abort();
     }
 }
@@ -245,7 +224,7 @@ void ChatClient::sendPing() {
 // 功能：从接收缓存中循环解析完整帧，支持 TCP 半包和一次收到多帧的情况。
 // 失败：帧头不符合协议时清空认证状态、通知认证失败并断开连接。
 void ChatClient::processReceivedFrames() {
-    while (m_received_buffer.size() >= kHeaderLength) {
+    while (m_received_buffer.size() >= static_cast<int>(protocol::kFrameHeaderLength)) {
         const auto* header =
             reinterpret_cast<const unsigned char*>(m_received_buffer.constData());
         const auto magic = static_cast<quint16>(header[0] << 8 | header[1]);
@@ -254,20 +233,23 @@ void ChatClient::processReceivedFrames() {
         const auto body_length = static_cast<quint32>(
             header[4] << 24 | header[5] << 16 | header[6] << 8 | header[7]);
 
-        if (magic != kMagic || version != kVersion ||
-            !isKnownType(type) || body_length > kMaxBodyLength) {
+        if (magic != protocol::kFrameMagic || version != protocol::kProtocolVersion ||
+            !protocol::isKnownMessageType(type) ||
+            body_length > protocol::kMaxFrameBodyLength) {
             m_state = AuthState::idle;
             emit authFailed("收到非法聊天协议帧");
             m_socket.disconnectFromHost();
             return;
         }
 
-        const int frame_length = kHeaderLength + static_cast<int>(body_length);
+        const int frame_length = static_cast<int>(protocol::kFrameHeaderLength) +
+                                 static_cast<int>(body_length);
         if (m_received_buffer.size() < frame_length) {
             return;
         }
 
-        const QByteArray body = m_received_buffer.mid(kHeaderLength, body_length);
+        const QByteArray body = m_received_buffer.mid(
+            static_cast<int>(protocol::kFrameHeaderLength), static_cast<int>(body_length));
         m_received_buffer.remove(0, frame_length);
         dispatchFrame(type, body);
     }
@@ -276,22 +258,22 @@ void ChatClient::processReceivedFrames() {
 // 功能：按协议消息类型分派正文，避免将认证和心跳正文错误当作聊天 JSON 解析。
 void ChatClient::dispatchFrame(const quint8 type, const QByteArray& body) {
     switch (type) {
-    case kAuthType:
+    case static_cast<quint8>(protocol::MessageType::auth):
         handleAuthBody(body);
         break;
-    case kPingType:
+    case static_cast<quint8>(protocol::MessageType::ping):
         handlePingBody(body);
         break;
-    case kChatType:
+    case static_cast<quint8>(protocol::MessageType::chat):
         handleChatBody(body);
         break;
-    case kErrorType:
+    case static_cast<quint8>(protocol::MessageType::error):
         handleErrorBody(body);
         break;
-    case kPongType:
+    case static_cast<quint8>(protocol::MessageType::pong):
         handlePongBody(body);
         break;
-    case kChatAckType:
+    case static_cast<quint8>(protocol::MessageType::chat_ack):
         handleChatAckBody(body);
         break;
     default:
@@ -376,7 +358,7 @@ void ChatClient::handleErrorBody(const QByteArray& body) {
 // 功能：收到 type=2 心跳请求后原样发送 type=3 心跳响应。
 void ChatClient::handlePingBody(const QByteArray& body) {
     QString error;
-    if (!writeFrame(kPongType, body, error)) {
+    if (!writeFrame(static_cast<quint8>(protocol::MessageType::pong), body, error)) {
         m_socket.abort();
     }
 }

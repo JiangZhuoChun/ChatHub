@@ -40,6 +40,7 @@ private:
     void setupReply(QNetworkReply* reply);
 
     // ==================== 模块：网络资源 ====================
+    // 功能：创建并管理所有 HTTP 请求对应的 QNetworkReply 对象。
     QNetworkAccessManager m_manager;
 
     // ==================== 模块：请求配置状态 ====================
