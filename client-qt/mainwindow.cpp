@@ -5,11 +5,13 @@
 
 #include <QLabel>
 #include <QStyle>
-#include  <QLayoutItem>
+#include <QLayoutItem>
 #include <utility>
 #include <QListWidgetItem>
 #include <QUuid>
-
+namespace {
+    constexpr int kConversationPreviewMaxLength = 24;
+}
 
 // ==================== 模块：窗口生命周期 ====================
 // 功能：创建主窗口、初始化界面状态，并连接用户操作和聊天客户端信号。
@@ -61,7 +63,9 @@ void MainWindow::onSendClicked() {
     // 所有校验通过先保存再发送
     const ChatMessage message = makeOutgoingChatMessage(real_to, content);
     m_conversations[message.to].append(message);
+
     ensureConversationItem(message.to);
+    refreshConversationItem(message.to);
 
     if (m_currentPeer == message.to) {
         renderCurrentConversation();
@@ -112,6 +116,7 @@ void MainWindow::onChatMessageQueued(const ChatMessage& message)
         // 防御分支：即使调用方未提前保存，也以完整模型补建本地记录。
         m_conversations[message.to].append(message);
         ensureConversationItem(message.to);
+        refreshConversationItem(message.to);
     }
 
     if (m_currentPeer == message.to) {
@@ -160,14 +165,13 @@ void MainWindow::onChatMessageReceived(const ChatMessage& message)
 {
     m_conversations[message.from].append(message);
     ensureConversationItem(message.from);
-
     if (m_currentPeer == message.from) {
         renderCurrentConversation();
     }
     else {
         m_unreadCounts[message.from]++;
-        refreshConversationItem(message.from);
     }
+    refreshConversationItem(message.from);
 }
 
 // ==================== 模块：窗口初始化与连接状态辅助 ====================
@@ -328,8 +332,6 @@ void MainWindow::appendMessageBubble(const ChatMessage& message)
 
     ui->messageLayout->addWidget(row, 0, alignment);
     ui->messageScrollArea->ensureWidgetVisible(row);
-
-
 }
 // 功能：刷新会话列表中指定联系人的显示内容。
 void MainWindow::refreshConversationItem(const QString &peer)
@@ -342,12 +344,15 @@ void MainWindow::refreshConversationItem(const QString &peer)
         const auto item = ui->conversationList->item(i);
         if (item->data(Qt::UserRole).toString() == peer)
         {
-             const int unread_count = m_unreadCounts.value(peer, 0);
+            const int unread_count = m_unreadCounts.value(peer, 0);
+            const auto preview = makeConversationPreview(peer);
+            QString line = "";
             if (unread_count == 0) {
-                item->setText(peer);
+                line = QStringLiteral("%1\n%2").arg(peer).arg(preview);
             } else {
-                item->setText(peer + " (" + QString::number(unread_count) + ")");
+                line = QStringLiteral("%1 (%2)\n%3").arg(peer).arg(unread_count).arg(preview);
             }
+            item->setText(line);
         }
     }
 }
@@ -359,6 +364,38 @@ void MainWindow::markConversationRead(const QString &peer)
     }
     m_unreadCounts.remove(peer);
     refreshConversationItem(peer);
+}
+
+// 功能：生成会话预览文本。
+QString MainWindow::makeConversationPreview(const QString &peer) const
+{
+    const auto chatMessage_it = m_conversations.constFind(peer);
+    if (chatMessage_it != m_conversations.end()) {
+        if (const auto& messages = chatMessage_it.value(); !messages.isEmpty())
+        {
+            const auto& message = messages.last();
+            QString preview = message.content;
+            preview.replace(QStringLiteral("\r\n"), QStringLiteral(" "));
+            preview.replace(u'\n', u' ');
+            preview.replace(u'\r', u' ');
+
+            if (preview.size() > kConversationPreviewMaxLength) {
+                // 1. 先截取前缀文本
+                preview = preview.left(kConversationPreviewMaxLength -1);
+                // 2. 判断末尾是否是高代理项 high surrogate
+                //emoji 边界处理
+                if (const char16_t last_char = preview.back().unicode();
+                    QChar::isHighSurrogate(last_char))
+                {
+                    // 剔除残缺的高代理字符
+                    preview.chop(1);
+                }
+                return preview + QStringLiteral("…");
+            }
+            return preview;
+        }
+    }
+    return QStringLiteral("暂无消息");
 }
 
 

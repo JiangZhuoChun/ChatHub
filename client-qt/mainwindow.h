@@ -86,6 +86,8 @@ private:
     void refreshConversationItem(const QString& peer);
     // 功能：将指定联系人的未读消息计数标记为已读。
     void markConversationRead(const QString& peer);
+    // 功能：创建或更新会话列表项的预览内容。
+    QString makeConversationPreview(const QString& peer) const;
 
 
     // ==================== 模块：消息查询、依赖与状态 ====================
