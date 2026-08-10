@@ -1,5 +1,5 @@
 #pragma once
-
+#include "chat_types.h"
 #include <QAbstractSocket>
 #include <QByteArray>
 #include <QDateTime>
@@ -57,9 +57,7 @@ signals:
     void chatMessageAccepted(const QString& local_id);
 
     // 功能：通知收到服务端转发的聊天消息及其发送者、接收者和时间。
-    void chatMessageReceived(const QString& local_id, const QString& from,
-                             const QString& to, const QString& content,
-                             const QDateTime& send_at);
+    void chatMessageReceived(const ChatMessage& message);
 
     // 功能：通知 local_id 对应的聊天消息发送或服务端处理失败。
     void chatSendFailed(const QString& local_id, const QString& reason);
@@ -94,6 +92,8 @@ private:
     // ==================== 模块：初始化与连接辅助 ====================
     // 功能：绑定 Socket、连接计时器的 Qt 信号与本类事件处理函数。
     void connectSlots();
+
+    static ChatMessage makeReceivedChatMessage(const QJsonObject &object);
 
     // ==================== 模块：协议帧编码与发送 ====================
     // 功能：将 type 和正文编码为 [魔数][版本][类型][长度][正文] 格式的字节帧。

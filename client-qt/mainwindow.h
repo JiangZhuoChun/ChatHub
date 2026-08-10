@@ -55,9 +55,7 @@ private slots:
     //4.接收消息槽
     // ==================== 模块：接收消息处理 ====================
     // 功能：将服务端转发的聊天消息渲染为收到消息气泡。
-    void onChatMessageReceived(const QString& local_id, const QString& from,
-                               const QString& to, const QString& content,
-                               const QDateTime& send_at);
+    void onChatMessageReceived(const ChatMessage& message);
 
 
 

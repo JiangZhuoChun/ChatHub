@@ -154,22 +154,12 @@ void MainWindow::onChatSendFailed(const QString& local_id, const QString& reason
 }
 // ==================== 模块：接收消息处理 ====================
 // 功能：将服务端转发的消息渲染为收到状态的聊天气泡。
-void MainWindow::onChatMessageReceived(const QString& local_id, const QString& from,
-                                       const QString& to, const QString& content,
-                                       const QDateTime& send_at)
+void MainWindow::onChatMessageReceived(const ChatMessage& message)
 {
-    ChatMessage message;
-    message.local_id = local_id;
-    message.content = content;
-    message.from = from;
-    message.to = to;
-    message.send_at = send_at;
-    message.status = ChatMessageStatus::Received;
+    m_conversations[message.from].append(message);
+    ensureConversationItem(message.from);
 
-    m_conversations[from].append(message);
-    ensureConversationItem(from);
-
-    if (m_currentPeer == from) {renderCurrentConversation();}
+    if (m_currentPeer == message.from) {renderCurrentConversation();}
 }
 
 

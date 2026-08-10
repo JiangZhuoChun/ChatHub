@@ -153,6 +153,20 @@ void ChatClient::connectSlots() {
             });
 }
 
+ChatMessage ChatClient::makeReceivedChatMessage(const QJsonObject &object)
+{
+    ChatMessage message;
+    message.local_id = object.value("local_id").toString();
+    message.from = object.value("from").toString();
+    message.to = object.value("to").toString();
+    message.content = object.value("content").toString();
+    message.send_at = QDateTime::fromString(object.value("send_at").toString(), Qt::ISODate);
+    message.status = ChatMessageStatus::Received;
+
+    return message;
+}
+
+
 // ==================== 模块：协议帧编码与发送 ====================
 // 功能：将 type 和正文按大端序编码为聊天服务器使用的完整协议帧。
 QByteArray ChatClient::makeFrame(const quint8 type, const QByteArray& body) {
@@ -315,20 +329,21 @@ void ChatClient::handleChatBody(const QByteArray& body) {
     }
 
     const QJsonObject object = document.object();
-    const QString local_id = object.value("local_id").toString();
-    const QString from = object.value("from").toString();
-    const QString to = object.value("to").toString();
-    const QString content = object.value("content").toString();
-    if (local_id.isEmpty() || from.isEmpty() || to.isEmpty() || content.isEmpty()) {
+
+    if (object.value("local_id").toString().isEmpty() || object.value("from").toString().isEmpty() ||
+        object.value("to").toString().isEmpty() || object.value("content").toString().isEmpty()) {
         emit serverError(QStringLiteral("聊天信息缺少必要字段"));
         return;
     }
 
-    const QDateTime send_at =
-        QDateTime::fromString(object.value("send_at").toString(), Qt::ISODate);
-    emit chatMessageReceived(local_id, from, to, content, send_at);
+    const QDateTime send_at = QDateTime::fromString(object.value("send_at").toString(), Qt::ISODate);
+    if (!send_at.isValid()) {
+        emit serverError(QStringLiteral("聊天信息时间字段错误"));
+        return;
+    }
+    const auto message = makeReceivedChatMessage(object);
+    emit chatMessageReceived(message);
 }
-
 // 功能：解析 type=4 错误正文，并按 local_id 或认证状态转换为对应错误信号。
 void ChatClient::handleErrorBody(const QByteArray& body) {
     QJsonParseError parse_error;
