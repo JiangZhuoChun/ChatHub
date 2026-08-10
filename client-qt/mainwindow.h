@@ -88,6 +88,10 @@ private:
     void markConversationRead(const QString& peer);
     // 功能：创建或更新会话列表项的预览内容。
     QString makeConversationPreview(const QString& peer) const;
+    // 功能：将发送时间格式化为相对时间。
+    static QString formatConversationTime(const QDateTime& send_at,const QDateTime& now);
+    // 功能：获取指定 peer 的时间摘要
+    QString makeConversationTimeText(const QString& peer) const;
 
 
     // ==================== 模块：消息查询、依赖与状态 ====================

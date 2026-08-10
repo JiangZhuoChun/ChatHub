@@ -344,15 +344,23 @@ void MainWindow::refreshConversationItem(const QString &peer)
         const auto item = ui->conversationList->item(i);
         if (item->data(Qt::UserRole).toString() == peer)
         {
+            // ========== 1. 构造第一行标题（名称 + 未读数 + 时间摘要） ==========
             const int unread_count = m_unreadCounts.value(peer, 0);
             const auto preview = makeConversationPreview(peer);
-            QString line = "";
+            const auto time_text = makeConversationTimeText(peer);
+            QString line1;
             if (unread_count == 0) {
-                line = QStringLiteral("%1\n%2").arg(peer).arg(preview);
+                line1 = QStringLiteral("%1").arg(peer);
             } else {
-                line = QStringLiteral("%1 (%2)\n%3").arg(peer).arg(unread_count).arg(preview);
+                line1 = QStringLiteral("%1 (%2)").arg(peer).arg(unread_count);
             }
-            item->setText(line);
+            // 有时间文本才追加分隔符 · 时间
+            if (!time_text.isEmpty()) {
+                line1 += QStringLiteral(" \u00B7 %1").arg(time_text);
+            }
+
+            // ========== 2. 换行拼接，一次性 setText ==========
+            item->setText(line1 + QStringLiteral("\n") + preview);
         }
     }
 }
@@ -396,6 +404,54 @@ QString MainWindow::makeConversationPreview(const QString &peer) const
         }
     }
     return QStringLiteral("暂无消息");
+}
+
+QString MainWindow::formatConversationTime(const QDateTime &send_at, const QDateTime &now)
+{
+    if (!send_at.isValid() || !now.isValid()) {
+        return QString();
+    }
+    // 2. 统一转为本地日期对比
+    QDateTime localSend = send_at.toLocalTime();
+    QDateTime localNow = now.toLocalTime();
+
+    QDate sendDate = localSend.date();
+    QDate today = localNow.date();
+
+    //今天
+    if (sendDate == today) {
+        return  localSend.toString("HH:mm");
+    }
+    //昨天
+    if (sendDate == today.addDays(-1)) {
+        return QStringLiteral("昨天");
+    }
+    // 同年不同天：MM-dd
+    if (sendDate.year() == today.year())
+    {
+        return localSend.toString("MM-dd");
+    }
+    // 跨年
+    return localSend.toString("yyyy-MM-dd");
+}
+
+QString MainWindow::makeConversationTimeText(const QString &peer) const
+{
+    if (peer.isEmpty()) {
+        return "";
+    }
+    const auto chatMessage_it = m_conversations.constFind(peer);
+
+    if (chatMessage_it != m_conversations.end()) {
+        if (const auto& messages = chatMessage_it.value(); !messages.isEmpty())
+        {
+            const auto& message = messages.last();
+            const QDateTime now = QDateTime::currentDateTimeUtc();
+
+            return formatConversationTime(message.send_at, now);
+        }
+    }
+    return "";
 }
 
 
