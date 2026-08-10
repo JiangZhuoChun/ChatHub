@@ -120,6 +120,7 @@ void MainWindow::onChatMessageQueued(const ChatMessage& message)
         // 防御分支：即使调用方未提前保存，也以完整模型补建本地记录。
         m_conversations[message.to].append(message);
         ensureConversationItem(message.to);
+        moveConversationItemToTop(message.to);
         refreshConversationItem(message.to);
     }
 
