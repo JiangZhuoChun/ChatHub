@@ -223,11 +223,15 @@ ChatMessage MainWindow::makeOutgoingChatMessage(const QString &to, const QString
 
 //==================== 模块：会话与气泡辅助 ====================
 // 功能：确保会话列表中存在指定联系人，不存在则添加。
-void MainWindow::ensureConversationItem(const QString& peer) const
+void MainWindow::ensureConversationItem(const QString& peer)
 {
-    if (const auto items =ui->conversationList->findItems(peer,Qt::MatchExactly);
-        items.isEmpty())
-        {ui->conversationList->addItem(peer);}
+    for (int i = 0; i < ui->conversationList->count(); ++i) {
+        const auto item = ui->conversationList->item(i);
+        if (peer == item->data(Qt::UserRole).toString())
+        {return;}
+    }
+    const auto item = new QListWidgetItem(peer, ui->conversationList);
+    item->setData(Qt::UserRole, peer);
 }
 // 功能：清空消息气泡布局。
 void MainWindow::clearMessageBubbles() const
@@ -340,7 +344,7 @@ QString MainWindow::chatMessageStatusToString(const ChatMessageStatus status)
     }
 }
 // 功能：根据 local_id 查找消息。
-ChatMessage * MainWindow::findMessageByLocalId(const QString &local_id) const
+ChatMessage * MainWindow::findMessageByLocalId(const QString &local_id)
 {
 
     if (local_id.isEmpty()) {
@@ -350,13 +354,12 @@ ChatMessage * MainWindow::findMessageByLocalId(const QString &local_id) const
     for (auto conversation_it = m_conversations.begin();
         conversation_it != m_conversations.end(); ++conversation_it)
     {
-        for (const ChatMessage& message : conversation_it.value())
+        for (ChatMessage& message : conversation_it.value())
         {
             if (message.local_id == local_id) {
-                return const_cast<ChatMessage*>(&message);
+                return &message;
             }
         }
     }
-
     return nullptr;
 }

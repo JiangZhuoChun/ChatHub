@@ -75,7 +75,7 @@ private:
 
     //==================== 模块：会话与气泡辅助 ====================
     // 功能：确保会话列表中存在指定联系人的会话项，不存在则创建。
-    void ensureConversationItem(const QString& peer) const;
+    void ensureConversationItem(const QString& peer);
     // 功能：清空所有消息气泡。
     void clearMessageBubbles() const;
     // 功能：渲染当前会话。
@@ -88,7 +88,7 @@ private:
     // 功能：将消息状态转换为 QSS 使用的字符串属性。
     static QString chatMessageStatusToString(ChatMessageStatus status);
     // 功能：根据本地消息 ID 查找消息。
-    ChatMessage* findMessageByLocalId(const QString& local_id) const;
+    ChatMessage* findMessageByLocalId(const QString& local_id);
 
     //2.外部依赖与界面对象
     // 功能：保存 Qt 设计器生成的界面对象，由析构函数释放。
