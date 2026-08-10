@@ -4,7 +4,6 @@
 #include "ui_mainwindow.h"
 
 #include <QLabel>
-#include <QUuid>
 #include <QStyle>
 #include  <QLayoutItem>
 #include <utility>
@@ -60,7 +59,7 @@ void MainWindow::onSendClicked() {
         return;
     }
     // 所有校验通过先保存再发送
-    ChatMessage message = makeOutgoingChatMessage(real_to, content);
+    const ChatMessage message = makeOutgoingChatMessage(real_to, content);
     m_conversations[message.to].append(message);
     ensureConversationItem(message.to);
 
@@ -103,8 +102,9 @@ void MainWindow::onConversationItemClicked(const QListWidgetItem *item)
 // 功能：为已进入发送缓冲区的消息创建气泡，或在重试时恢复已有气泡的发送状态。
 void MainWindow::onChatMessageQueued(const ChatMessage& message)
 {
-    ChatMessage* chat_message = findMessageByLocalId(message.local_id);
-    if (chat_message != nullptr) {
+    if (ChatMessage* chat_message = findMessageByLocalId(message.local_id);
+        chat_message != nullptr)
+    {
         chat_message->status = ChatMessageStatus::Sending;
         chat_message->failure_reason.clear();
     } else {
@@ -205,7 +205,7 @@ void MainWindow::updateConnectionState(const bool connected, const QString& mess
     ui->connectionStateLabel->setText(message);
     ui->sendBtn->setEnabled(connected);
 }
-
+// 功能：创建一个本地 ChatMessage 模型，用于发送到服务器。
 ChatMessage MainWindow::makeOutgoingChatMessage(const QString &to, const QString &content) const
 {
     ChatMessage message;
@@ -225,8 +225,9 @@ ChatMessage MainWindow::makeOutgoingChatMessage(const QString &to, const QString
 // 功能：确保会话列表中存在指定联系人，不存在则添加。
 void MainWindow::ensureConversationItem(const QString& peer) const
 {
-    const auto items =ui->conversationList->findItems(peer,Qt::MatchExactly);
-    if (items.isEmpty()) {ui->conversationList->addItem(peer);}
+    if (const auto items =ui->conversationList->findItems(peer,Qt::MatchExactly);
+        items.isEmpty())
+        {ui->conversationList->addItem(peer);}
 }
 // 功能：清空消息气泡布局。
 void MainWindow::clearMessageBubbles() const
@@ -249,25 +250,16 @@ void MainWindow::renderCurrentConversation()
 
     //使用 constFind() 读取 QHash：它不会像 operator[] 一样在键不存在时意外创建空会话。
     const auto chatMessage_it = m_conversations.constFind(m_currentPeer);
+
     if (chatMessage_it == m_conversations.end()) {return;}
 
-    for (const auto&[local_id, from, to, content,
-        send_at, status, failure_reason] :chatMessage_it.value())
+    for (const auto& message :chatMessage_it.value())
     {
-        appendMessageBubble(local_id,
-                            from,
-                            to,
-                            content,
-                            send_at,
-                            status,
-                            failure_reason);
+        appendMessageBubble(message);
     }
 }
 // 功能：向消息气泡布局中添加一个新气泡。
-void MainWindow::appendMessageBubble(
-    const QString& local_id, const QString& from, const QString& to,
-    const QString& content, const QDateTime& send_at, const ChatMessageStatus& status,
-    const QString& failure_reason)
+void MainWindow::appendMessageBubble(const ChatMessage& message)
 {
 
     auto* row = new QWidget(ui->messageContainer);
@@ -278,34 +270,35 @@ void MainWindow::appendMessageBubble(
     label->setWordWrap(true);
     label->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
-    QString text = from + QStringLiteral(": ") + content;
-    if (send_at.isValid()) {
-        text = from + QStringLiteral(": ") + content + QStringLiteral("\n") +
+    QString text = message.from + QStringLiteral(": ") + message.content;
+    if (message.send_at.isValid())
+    {
+        text = message.from + QStringLiteral(": ") + message.content + QStringLiteral("\n") +
                QStringLiteral(" [") +
-               send_at.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) +
+               message.send_at.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) +
                QStringLiteral("]");
     }
     label->setText(text);
 
-    label->setProperty("local_id", local_id);
-    label->setProperty("from", from);
-    label->setProperty("to", to);
-    const QString status_text = chatMessageStatusToString(status);
+    label->setProperty("local_id", message.local_id);
+    label->setProperty("from", message.from);
+    label->setProperty("to", message.to);
+    const QString status_text = chatMessageStatusToString(message.status);
     label->setProperty("status", status_text);
 
     auto* retry_button = new QToolButton(row);
     connect(retry_button, &QToolButton::clicked, this,
             // 功能：用户点击失败标记时，重试该按钮所属 local_id 的消息。
-            [this, local_id] {
+            [this, local_id = message.local_id] {
                 onRetryClicked(local_id);
             });
     retry_button->setText(QStringLiteral("!"));
     retry_button->setFixedSize(18, 18);
 
-    const bool is_failed = status == ChatMessageStatus::Failed;
+    const bool is_failed = message.status == ChatMessageStatus::Failed;
     retry_button->setVisible(is_failed);
     retry_button->setToolTip(
-    failure_reason.isEmpty()? QStringLiteral("消息发送失败"): failure_reason);
+    message.failure_reason.isEmpty()? QStringLiteral("消息发送失败"): message.failure_reason);
 
     retry_button->setStyleSheet(
         QStringLiteral(
@@ -317,7 +310,7 @@ void MainWindow::appendMessageBubble(
             "font-weight: bold;"
             "}"));
 
-    const bool is_mine = from == m_username;
+    const bool is_mine = message.from == m_username;
     const Qt::Alignment alignment = is_mine ? Qt::AlignRight : Qt::AlignLeft;
     row_layout->addWidget(label, 1);
     row_layout->addWidget(retry_button, 0, Qt::AlignCenter);

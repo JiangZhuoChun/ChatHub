@@ -81,10 +81,7 @@ private:
     // 功能：渲染当前会话。
     void renderCurrentConversation();
     // 功能：创建带发送者、正文、时间、状态属性和重试按钮的聊天气泡。
-    void appendMessageBubble(const QString& local_id, const QString& from,
-                                       const QString& to, const QString& content,
-                                       const QDateTime& send_at, const ChatMessageStatus& status,
-                                       const QString& failure_reason);
+    void appendMessageBubble(const ChatMessage& message);
 
     // ==================== 模块：消息查询、依赖与状态 ====================
     //1.消息查询辅助
