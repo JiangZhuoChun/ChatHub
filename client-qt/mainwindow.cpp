@@ -169,6 +169,7 @@ void MainWindow::onChatMessageReceived(const ChatMessage& message)
 {
     m_conversations[message.from].append(message);
     ensureConversationItem(message.from);
+    moveConversationItemToTop(message.from);
     if (m_currentPeer == message.from) {
         renderCurrentConversation();
     }
