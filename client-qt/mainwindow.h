@@ -92,6 +92,8 @@ private:
     static QString formatConversationTime(const QDateTime& send_at,const QDateTime& now);
     // 功能：获取指定 peer 的时间摘要
     QString makeConversationTimeText(const QString& peer) const;
+    // 功能：将指定联系人的会话项移动到会话列表顶部。
+    void moveConversationItemToTop(const QString& peer);
 
 
     // ==================== 模块：消息查询、依赖与状态 ====================

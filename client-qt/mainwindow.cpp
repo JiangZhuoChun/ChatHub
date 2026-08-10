@@ -64,7 +64,11 @@ void MainWindow::onSendClicked() {
     const ChatMessage message = makeOutgoingChatMessage(real_to, content);
     m_conversations[message.to].append(message);
 
+    //1.确保会话列表项存在
     ensureConversationItem(message.to);
+    //2. 移动会话列表项到顶部
+    moveConversationItemToTop(message.to);
+    //3. 刷新会话列表项
     refreshConversationItem(message.to);
 
     if (m_currentPeer == message.to) {
@@ -454,6 +458,20 @@ QString MainWindow::makeConversationTimeText(const QString &peer) const
     return "";
 }
 
+void MainWindow::moveConversationItemToTop(const QString &peer)
+{
+    if (peer.isEmpty()) {return;}
+
+    for (int i = 0; i < ui->conversationList->count(); ++i)
+    {
+        if (ui->conversationList->item(i)->data(Qt::UserRole).toString() == peer)
+        {
+            const auto item = ui->conversationList->takeItem(i);
+            ui->conversationList->insertItem(0, item);
+            return;
+        }
+    }
+}
 
 // ==================== 模块：消息查询辅助 ====================
 // 功能：将消息状态枚举转换为字符串。
