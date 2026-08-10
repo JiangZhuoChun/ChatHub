@@ -82,6 +82,11 @@ private:
     void renderCurrentConversation();
     // 功能：创建带发送者、正文、时间、状态属性和重试按钮的聊天气泡。
     void appendMessageBubble(const ChatMessage& message);
+    // 功能：刷新指定联系人的会话项，更新未读消息计数。
+    void refreshConversationItem(const QString& peer);
+    // 功能：将指定联系人的未读消息计数标记为已读。
+    void markConversationRead(const QString& peer);
+
 
     // ==================== 模块：消息查询、依赖与状态 ====================
     //1.消息查询辅助
@@ -103,4 +108,6 @@ private:
     QHash<QString,QList<ChatMessage>> m_conversations;
     // 功能：当前右侧正在显示的会话联系人。
     QString m_currentPeer;
+    // 功能：保存每个联系人的未读消息计数。
+    QHash<QString,int> m_unreadCounts;
 };

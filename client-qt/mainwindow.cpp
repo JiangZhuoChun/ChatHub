@@ -91,7 +91,8 @@ void MainWindow::onRetryClicked(const QString& local_id)
 void MainWindow::onConversationItemClicked(const QListWidgetItem *item)
 {
     if (item == nullptr) {return;}
-    m_currentPeer = item->text();
+    m_currentPeer = item->data(Qt::UserRole).toString();
+    markConversationRead(m_currentPeer);
     ui->peerNameLabel->setText(m_currentPeer);
     renderCurrentConversation();
 }
@@ -151,6 +152,8 @@ void MainWindow::onChatSendFailed(const ChatMessage& update)
 
     statusBar()->showMessage(QStringLiteral("消息发送失败：") + update.failure_reason);
 }
+
+
 // ==================== 模块：接收消息处理 ====================
 // 功能：将服务端转发的消息渲染为收到状态的聊天气泡。
 void MainWindow::onChatMessageReceived(const ChatMessage& message)
@@ -158,10 +161,14 @@ void MainWindow::onChatMessageReceived(const ChatMessage& message)
     m_conversations[message.from].append(message);
     ensureConversationItem(message.from);
 
-    if (m_currentPeer == message.from) {renderCurrentConversation();}
+    if (m_currentPeer == message.from) {
+        renderCurrentConversation();
+    }
+    else {
+        m_unreadCounts[message.from]++;
+        refreshConversationItem(message.from);
+    }
 }
-
-
 
 // ==================== 模块：窗口初始化与连接状态辅助 ====================
 // 功能：设置窗口大小、当前用户名、默认会话提示和初始发送按钮状态。
@@ -323,6 +330,35 @@ void MainWindow::appendMessageBubble(const ChatMessage& message)
     ui->messageScrollArea->ensureWidgetVisible(row);
 
 
+}
+// 功能：刷新会话列表中指定联系人的显示内容。
+void MainWindow::refreshConversationItem(const QString &peer)
+{
+    if (peer.isEmpty()) {
+        return;
+    }
+    for (int i = 0; i < ui->conversationList->count(); ++i)
+    {
+        const auto item = ui->conversationList->item(i);
+        if (item->data(Qt::UserRole).toString() == peer)
+        {
+             const int unread_count = m_unreadCounts.value(peer, 0);
+            if (unread_count == 0) {
+                item->setText(peer);
+            } else {
+                item->setText(peer + " (" + QString::number(unread_count) + ")");
+            }
+        }
+    }
+}
+// 功能：将指定联系人的未读消息计数标记为已读。
+void MainWindow::markConversationRead(const QString &peer)
+{
+    if (peer.isEmpty()) {
+        return;
+    }
+    m_unreadCounts.remove(peer);
+    refreshConversationItem(peer);
 }
 
 
