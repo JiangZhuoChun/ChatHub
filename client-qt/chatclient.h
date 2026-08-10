@@ -29,7 +29,7 @@ public:
     // ==================== 模块：聊天发送接口 ====================
     // 功能：构造聊天 JSON 正文并发送，使用 local_id 关联确认、错误和重试状态。
     // 失败：未认证、参数为空或帧写入失败时，通过 chatSendFailed() 通知调用方。
-    void sendChatMessage(const QString& to, const QString& content, const QString& local_id = {});
+    void sendChatMessage(ChatMessage message);
 
 signals:
     // ==================== 模块：认证与连接结果通知 ====================
@@ -50,8 +50,7 @@ signals:
 
     // ==================== 模块：聊天业务结果通知 ====================
     // 功能：通知聊天消息已经写入客户端发送缓冲区，并提供用于显示的发送时间。
-    void chatMessageQueued(const QString& to, const QString& content,
-                           const QString& local_id, const QDateTime& send_at);
+    void chatMessageQueued(const ChatMessage& message);
 
     // 功能：通知服务端已接受 local_id 对应的聊天消息。
     void chatMessageAccepted(const QString& local_id);
@@ -93,6 +92,7 @@ private:
     // 功能：绑定 Socket、连接计时器的 Qt 信号与本类事件处理函数。
     void connectSlots();
 
+    // 功能：将接收到的 JSON 聊天消息转换为 ChatMessage 对象。
     static ChatMessage makeReceivedChatMessage(const QJsonObject &object);
 
     // ==================== 模块：协议帧编码与发送 ====================

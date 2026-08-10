@@ -36,7 +36,7 @@ private slots:
     //2.用户操作槽
     // ==================== 模块：用户发送操作 ====================
     // 功能：手填接收者优先，否则回退当前会话；校验通过后只交给 ChatClient 发送一次。
-    void onSendClicked() const;
+    void onSendClicked();
     // 功能：使用原始 local_id、接收者和正文重新提交失败消息。
     void onRetryClicked(const QString& local_id);
     // 功能：点击会话列表项时更新当前会话。
@@ -45,8 +45,7 @@ private slots:
     //3.消息状态槽
     // ==================== 模块：消息发送状态处理 ====================
     // 功能：为已写入发送缓冲区的消息创建或恢复待确认气泡。
-    void onChatMessageQueued(const QString& to, const QString& content,
-                             const QString& local_id, const QDateTime& send_at);
+    void onChatMessageQueued(const ChatMessage& message);
     // 功能：将服务端已接受的消息气泡更新为成功状态并移出待确认表。
     void onChatMessageAccepted(const QString& local_id);
     // 功能：将发送失败的消息气泡标记为失败，并显示可点击的重试按钮。
@@ -71,6 +70,9 @@ private:
     // 功能：更新连接状态标签的文本、样式属性和发送按钮可用状态。
     void updateConnectionState(bool connected, const QString& message) const;
 
+    // 功能：创建一个本地消息对象，用于发送消息。
+    ChatMessage makeOutgoingChatMessage(const QString& to, const QString& content) const;
+
     //==================== 模块：会话与气泡辅助 ====================
     // 功能：确保会话列表中存在指定联系人的会话项，不存在则创建。
     void ensureConversationItem(const QString& peer) const;
@@ -89,7 +91,7 @@ private:
     // 功能：将消息状态转换为 QSS 使用的字符串属性。
     static QString chatMessageStatusToString(ChatMessageStatus status);
     // 功能：根据本地消息 ID 查找消息。
-    ChatMessage* findMessageByLocalId(const QString& local_id);
+    ChatMessage* findMessageByLocalId(const QString& local_id) const;
 
     //2.外部依赖与界面对象
     // 功能：保存 Qt 设计器生成的界面对象，由析构函数释放。

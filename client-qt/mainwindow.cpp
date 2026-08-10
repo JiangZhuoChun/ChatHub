@@ -4,10 +4,12 @@
 #include "ui_mainwindow.h"
 
 #include <QLabel>
+#include <QUuid>
 #include <QStyle>
 #include  <QLayoutItem>
 #include <utility>
 #include <QListWidgetItem>
+#include <QUuid>
 
 
 // ==================== 模块：窗口生命周期 ====================
@@ -38,12 +40,12 @@ void MainWindow::onDisconnected() const
 //2.用户操作槽
 // ==================== 模块：用户发送操作 ====================
 // 功能：读取当前输入框中的接收者和正文，并请求 ChatClient 发送消息。
-void MainWindow::onSendClicked() const
-{
+void MainWindow::onSendClicked() {
     // 手填接收者优先；未填写时才使用当前正在查看的会话联系人。
     const QString to = ui->recipientEdit->text().trimmed();
-    QString real_to = to;
     const QString content = ui->messageEdit->toPlainText();
+    QString real_to = to;
+
     if (to.isEmpty()) {
         if (m_currentPeer.isEmpty()) {
             statusBar()->showMessage("请选择联系人或输入接收者");
@@ -57,8 +59,15 @@ void MainWindow::onSendClicked() const
         statusBar()->showMessage("信息不能为空");
         return;
     }
-    // 所有校验通过后只发送一次，避免产生无关联的失败 local_id。
-    m_chat->sendChatMessage(real_to, content);
+    // 所有校验通过先保存再发送
+    ChatMessage message = makeOutgoingChatMessage(real_to, content);
+    m_conversations[message.to].append(message);
+    ensureConversationItem(message.to);
+
+    if (m_currentPeer == message.to) {
+        renderCurrentConversation();
+    }
+    m_chat->sendChatMessage(message);
 }
 // 功能：读取待确认表中的原消息，用相同 local_id 请求 ChatClient 再次发送。
 void MainWindow::onRetryClicked(const QString& local_id)
@@ -70,15 +79,14 @@ void MainWindow::onRetryClicked(const QString& local_id)
     }
     // 网络调用可能同步触发信号，因此先复制，后续不再使用 message 指针。
     const auto to = message->to;
-    const auto content = message->content;
-
     message->status = ChatMessageStatus::Sending;
     message->failure_reason.clear();
+    const ChatMessage retry_message = *message;
 
     if (m_currentPeer == to) {
         renderCurrentConversation();
     }
-    m_chat->sendChatMessage(to,content,local_id);
+    m_chat->sendChatMessage(retry_message);
 }
 // 功能：点击会话列表项时，更新当前会话并渲染聊天界面。
 void MainWindow::onConversationItemClicked(const QListWidgetItem *item)
@@ -93,30 +101,21 @@ void MainWindow::onConversationItemClicked(const QListWidgetItem *item)
 //3.消息状态槽
 // ==================== 模块：消息发送状态处理 ====================
 // 功能：为已进入发送缓冲区的消息创建气泡，或在重试时恢复已有气泡的发送状态。
-void MainWindow::onChatMessageQueued(const QString& to, const QString& content,
-                                     const QString& local_id, const QDateTime& send_at)
+void MainWindow::onChatMessageQueued(const ChatMessage& message)
 {
-    if (auto* message = findMessageByLocalId(local_id);
-        message != nullptr)
-    {
-        message->status = ChatMessageStatus::Sending;
-        message->failure_reason.clear();
-    }
-    else
-    {
-        ChatMessage chatMessage;
-        chatMessage.local_id = local_id;
-        chatMessage.content = content;
-        chatMessage.from = m_username;
-        chatMessage.to = to;
-        chatMessage.send_at = send_at;
-        chatMessage.status = ChatMessageStatus::Sending;
-
-        m_conversations[chatMessage.to].append(chatMessage);
-        ensureConversationItem(chatMessage.to);
+    ChatMessage* chat_message = findMessageByLocalId(message.local_id);
+    if (chat_message != nullptr) {
+        chat_message->status = ChatMessageStatus::Sending;
+        chat_message->failure_reason.clear();
+    } else {
+        // 防御分支：即使调用方未提前保存，也以完整模型补建本地记录。
+        m_conversations[message.to].append(message);
+        ensureConversationItem(message.to);
     }
 
-    if (m_currentPeer == to) {renderCurrentConversation();}
+    if (m_currentPeer == message.to) {
+        renderCurrentConversation();
+    }
 
     statusBar()->showMessage(QStringLiteral("消息发送中..."));
 }
@@ -207,6 +206,19 @@ void MainWindow::updateConnectionState(const bool connected, const QString& mess
     ui->sendBtn->setEnabled(connected);
 }
 
+ChatMessage MainWindow::makeOutgoingChatMessage(const QString &to, const QString &content) const
+{
+    ChatMessage message;
+    message.local_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    message.from = m_username;
+    message.to = to;
+    message.content = content;
+    message.send_at = QDateTime::currentDateTimeUtc();
+    message.status = ChatMessageStatus::Sending;
+    message.failure_reason.clear();
+
+    return message;
+}
 
 
 //==================== 模块：会话与气泡辅助 ====================
@@ -335,7 +347,7 @@ QString MainWindow::chatMessageStatusToString(const ChatMessageStatus status)
     }
 }
 // 功能：根据 local_id 查找消息。
-ChatMessage * MainWindow::findMessageByLocalId(const QString &local_id)
+ChatMessage * MainWindow::findMessageByLocalId(const QString &local_id) const
 {
 
     if (local_id.isEmpty()) {
@@ -345,10 +357,10 @@ ChatMessage * MainWindow::findMessageByLocalId(const QString &local_id)
     for (auto conversation_it = m_conversations.begin();
         conversation_it != m_conversations.end(); ++conversation_it)
     {
-        for (ChatMessage& message : conversation_it.value())
+        for (const ChatMessage& message : conversation_it.value())
         {
             if (message.local_id == local_id) {
-                return &message;
+                return const_cast<ChatMessage*>(&message);
             }
         }
     }

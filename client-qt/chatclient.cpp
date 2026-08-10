@@ -54,36 +54,38 @@ bool ChatClient::isAuthenticated() const {
 // ==================== 模块：聊天发送对外接口 ====================
 // 功能：创建包含接收者、正文、local_id 和协调世界时发送时间的聊天帧并写入套接字。
 // 失败：未认证、必要字段为空或写入失败时通知 local_id 对应的聊天消息失败。
-void ChatClient::sendChatMessage(const QString& to, const QString& content, const QString& local_id) {
-    const QString actual_local_id = local_id.trimmed().isEmpty()
-                                        ? QUuid::createUuid().toString(QUuid::WithoutBraces)
-                                        : local_id;
-    const QString normalized_to = to.trimmed();
+void ChatClient::sendChatMessage(ChatMessage message) {
+    const QString normalized_to = message.to.trimmed();
+
+    if (message.local_id.isEmpty() || !message.send_at.isValid()) {
+        emit serverError(QStringLiteral("发送消息缺少本地标识或时间"));
+        return;
+    }
 
     if (m_state != AuthState::authenticated) {
-        emit chatSendFailed(actual_local_id, "未认证");
+        emit chatSendFailed(message.local_id, "未认证");
         return;
     }
-    if (normalized_to.isEmpty() || content.trimmed().isEmpty()) {
-        emit chatSendFailed(actual_local_id, "消息不能为空");
+    if (normalized_to.isEmpty() || message.content.trimmed().isEmpty()) {
+        emit chatSendFailed(message.local_id, "消息不能为空");
         return;
     }
+    message.to = normalized_to;
 
-    const QDateTime send_at = QDateTime::currentDateTimeUtc();
     QJsonObject object;
     object["to"] = normalized_to;
-    object["content"] = content;
-    object["local_id"] = actual_local_id;
-    object["send_at"] = send_at.toString(Qt::ISODateWithMs);
+    object["content"] = message.content;
+    object["local_id"] = message.local_id;
+    object["send_at"] = message.send_at.toUTC().toString(Qt::ISODateWithMs);
     const QByteArray body = QJsonDocument(object).toJson(QJsonDocument::Compact);
 
     QString error;
     if (!writeFrame(static_cast<quint8>(protocol::MessageType::chat), body, error)) {
-        emit chatSendFailed(actual_local_id, error);
+        emit chatSendFailed(message.local_id, error);
         return;
     }
 
-    emit chatMessageQueued(normalized_to, content, actual_local_id, send_at);
+    emit chatMessageQueued(message);
 }
 
 // ==================== 模块：Socket 事件处理 ====================
@@ -153,6 +155,7 @@ void ChatClient::connectSlots() {
             });
 }
 
+// 功能：将接收到的 JSON 对象转换为 ChatMessage 对象。
 ChatMessage ChatClient::makeReceivedChatMessage(const QJsonObject &object)
 {
     ChatMessage message;
