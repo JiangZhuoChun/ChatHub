@@ -120,16 +120,16 @@ void MainWindow::onChatMessageQueued(const ChatMessage& message)
     statusBar()->showMessage(QStringLiteral("消息发送中..."));
 }
 // 功能：将已被服务器接受的消息改为成功状态，并移除其待确认记录。
-void MainWindow::onChatMessageAccepted(const QString& local_id) {
-    ChatMessage* message = findMessageByLocalId(local_id);
+void MainWindow::onChatMessageAccepted(const ChatMessage& update) {
+    ChatMessage* message = findMessageByLocalId(update.local_id);
     if (message == nullptr)
     {
         statusBar()->showMessage(QStringLiteral("收到未知消息确认"));
         return;
     }
 
-    message->status = ChatMessageStatus::Accepted;
-    message->failure_reason.clear();
+    message->status = update.status;
+    message->failure_reason = update.failure_reason;
 
     if (m_currentPeer == message->to) {
         renderCurrentConversation();
@@ -137,19 +137,19 @@ void MainWindow::onChatMessageAccepted(const QString& local_id) {
     statusBar()->showMessage(QStringLiteral("服务器已接收消息"));
 }
 // 功能：将 local_id 对应待确认消息标记为失败，显示原因并允许用户重试。
-void MainWindow::onChatSendFailed(const QString& local_id, const QString& reason)
+void MainWindow::onChatSendFailed(const ChatMessage& update)
 {
-    ChatMessage* message = findMessageByLocalId(local_id);
+    ChatMessage* message = findMessageByLocalId(update.local_id);
     if (message == nullptr) {
-        statusBar()->showMessage(QStringLiteral("未知消息发送失败：") + reason);
+        statusBar()->showMessage(QStringLiteral("未知消息发送失败：") + update.failure_reason);
         return;
     }
-    message->status = ChatMessageStatus::Failed;
-    message->failure_reason = reason;
+    message->status = update.status;
+    message->failure_reason = update.failure_reason;
 
     if (m_currentPeer == message->to) {renderCurrentConversation();}
 
-    statusBar()->showMessage(QStringLiteral("消息发送失败：") + reason);
+    statusBar()->showMessage(QStringLiteral("消息发送失败：") + update.failure_reason);
 }
 // ==================== 模块：接收消息处理 ====================
 // 功能：将服务端转发的消息渲染为收到状态的聊天气泡。

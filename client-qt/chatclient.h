@@ -53,13 +53,13 @@ signals:
     void chatMessageQueued(const ChatMessage& message);
 
     // 功能：通知服务端已接受 local_id 对应的聊天消息。
-    void chatMessageAccepted(const QString& local_id);
+    void chatMessageAccepted(const ChatMessage& update);
 
     // 功能：通知收到服务端转发的聊天消息及其发送者、接收者和时间。
     void chatMessageReceived(const ChatMessage& message);
 
     // 功能：通知 local_id 对应的聊天消息发送或服务端处理失败。
-    void chatSendFailed(const QString& local_id, const QString& reason);
+    void chatSendFailed(const ChatMessage& update);
 
     // 功能：通知不属于某条聊天消息的普通服务端错误。
     void serverError(const QString& reason);
@@ -94,6 +94,9 @@ private:
 
     // 功能：将接收到的 JSON 聊天消息转换为 ChatMessage 对象。
     static ChatMessage makeReceivedChatMessage(const QJsonObject &object);
+    // 功能：将本地消息状态更新转换为 ChatMessage 对象。
+    static ChatMessage makeMessageStateUpdate(const QString& local_id,
+        const ChatMessageStatus status,const QString& failure_reason = {});
 
     // ==================== 模块：协议帧编码与发送 ====================
     // 功能：将 type 和正文编码为 [魔数][版本][类型][长度][正文] 格式的字节帧。

@@ -63,11 +63,13 @@ void ChatClient::sendChatMessage(ChatMessage message) {
     }
 
     if (m_state != AuthState::authenticated) {
-        emit chatSendFailed(message.local_id, "未认证");
+        emit chatSendFailed(makeMessageStateUpdate
+            (message.local_id, ChatMessageStatus::Failed, "未认证"));
         return;
     }
     if (normalized_to.isEmpty() || message.content.trimmed().isEmpty()) {
-        emit chatSendFailed(message.local_id, "消息不能为空");
+        emit chatSendFailed(makeMessageStateUpdate
+            (message.local_id, ChatMessageStatus::Failed, "接收者或内容为空"));
         return;
     }
     message.to = normalized_to;
@@ -81,7 +83,8 @@ void ChatClient::sendChatMessage(ChatMessage message) {
 
     QString error;
     if (!writeFrame(static_cast<quint8>(protocol::MessageType::chat), body, error)) {
-        emit chatSendFailed(message.local_id, error);
+        emit chatSendFailed(makeMessageStateUpdate
+            (message.local_id, ChatMessageStatus::Failed, error));
         return;
     }
 
@@ -169,6 +172,20 @@ ChatMessage ChatClient::makeReceivedChatMessage(const QJsonObject &object)
     return message;
 }
 
+ChatMessage ChatClient::makeMessageStateUpdate(const QString &local_id, const ChatMessageStatus status,
+    const QString &failure_reason)
+{
+    ChatMessage update;
+    update.local_id = local_id;
+    update.status = status;
+    update.failure_reason = failure_reason;
+    update.from = "";
+    update.to = "";
+    update.content = "";
+    update.send_at = QDateTime{};
+    return update;
+}
+
 
 // ==================== 模块：协议帧编码与发送 ====================
 // 功能：将 type 和正文按大端序编码为聊天服务器使用的完整协议帧。
@@ -177,13 +194,13 @@ QByteArray ChatClient::makeFrame(const quint8 type, const QByteArray& body) {
     const auto length = static_cast<quint32>(body.size());
 
     frame.reserve(static_cast<int>(protocol::kFrameHeaderLength) + body.size());
-    frame.append(static_cast<char>(protocol::kFrameMagic >> 8));
-    frame.append(static_cast<char>(protocol::kFrameMagic & 0xFF));
-    frame.append(static_cast<char>(protocol::kProtocolVersion));
+    frame.append(protocol::kFrameMagic >> 8);
+    frame.append(protocol::kFrameMagic & 0xFF);
+    frame.append(protocol::kProtocolVersion);
     frame.append(static_cast<char>(type));
-    frame.append(static_cast<char>((length >> 24) & 0xFF));
-    frame.append(static_cast<char>((length >> 16) & 0xFF));
-    frame.append(static_cast<char>((length >> 8) & 0xFF));
+    frame.append(static_cast<char>(length >> 24 & 0xFF));
+    frame.append(static_cast<char>(length >> 16 & 0xFF));
+    frame.append(static_cast<char>(length >> 8 & 0xFF));
     frame.append(static_cast<char>(length & 0xFF));
     frame.append(body);
 
@@ -360,7 +377,7 @@ void ChatClient::handleErrorBody(const QByteArray& body) {
     const QString local_id = object.value("local_id").toString();
     const QString reason = object.value("message").toString(QStringLiteral("服务器返回错误"));
     if (!local_id.isEmpty()) {
-        emit chatSendFailed(local_id, reason);
+        emit chatSendFailed(makeMessageStateUpdate(local_id, ChatMessageStatus::Failed, reason));
         return;
     }
     if (m_state == AuthState::waitingAuthResult) {
@@ -404,5 +421,5 @@ void ChatClient::handleChatAckBody(const QByteArray& body) {
         return;
     }
 
-    emit chatMessageAccepted(local_id);
+    emit chatMessageAccepted(makeMessageStateUpdate(local_id, ChatMessageStatus::Accepted));
 }

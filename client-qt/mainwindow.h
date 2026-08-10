@@ -47,9 +47,9 @@ private slots:
     // 功能：为已写入发送缓冲区的消息创建或恢复待确认气泡。
     void onChatMessageQueued(const ChatMessage& message);
     // 功能：将服务端已接受的消息气泡更新为成功状态并移出待确认表。
-    void onChatMessageAccepted(const QString& local_id);
+    void onChatMessageAccepted(const ChatMessage& update);
     // 功能：将发送失败的消息气泡标记为失败，并显示可点击的重试按钮。
-    void onChatSendFailed(const QString& local_id, const QString& reason);
+    void onChatSendFailed(const ChatMessage& update);
 
     //4.接收消息槽
     // ==================== 模块：接收消息处理 ====================
