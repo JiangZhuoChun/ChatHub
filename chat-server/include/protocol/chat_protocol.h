@@ -14,6 +14,7 @@ enum class MessageType : std::uint8_t {
     error = 4,
     auth = 5,
     chat_ack = 6,
+    delivery_receipt = 7
 };
 
 // 功能：标识 ChatHub 协议帧，接收端据此拒绝非本协议字节流。
@@ -28,7 +29,7 @@ inline constexpr std::size_t kMaxFrameBodyLength = 1024;
 // 功能：判断帧头中的原始 type 值是否属于当前协议支持的类型范围。
 constexpr bool isKnownMessageType(const std::uint8_t raw_type) {
     return raw_type >= static_cast<std::uint8_t>(MessageType::chat) &&
-           raw_type <= static_cast<std::uint8_t>(MessageType::chat_ack);
+           raw_type <= static_cast<std::uint8_t>(MessageType::delivery_receipt);
 }
 
 } // protocol 命名空间结束

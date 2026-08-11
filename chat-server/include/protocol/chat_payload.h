@@ -3,6 +3,7 @@
 #include <string>
 #include <string_view>
 
+
 namespace protocol {
 
 // ==================== 模块：聊天正文校验错误类型 ====================
@@ -47,10 +48,25 @@ struct chatPayloadResult {
     // 功能：保存客户端提交的 ISO 格式发送时间。
     std::string send_at;
 };
-
 // ==================== 模块：聊天 JSON 正文校验 ====================
 // 功能：解析并校验聊天帧 JSON 正文，返回可安全用于服务端路由的字段。
 // 失败：字段缺失、类型错误、空白、超长或客户端伪造 sender_id 时返回相应错误。
 chatPayloadResult parseChatPayload(std::string_view body);
 
+
+enum class DeliveryReceiptPayloadError {
+    none,
+    invalid_json,
+    missing_local_id,
+    local_id_not_string,
+    blank_local_id,
+    local_id_too_long
+ };
+
+struct  DeliveryReceiptPayloadResult {
+    DeliveryReceiptPayloadError error{DeliveryReceiptPayloadError::none};
+    std::string local_id;
+};
+
+DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(std::string_view body);
 } // protocol 命名空间结束

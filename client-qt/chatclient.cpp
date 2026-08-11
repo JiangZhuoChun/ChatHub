@@ -91,6 +91,28 @@ void ChatClient::sendChatMessage(ChatMessage message) {
     emit chatMessageQueued(message);
 }
 
+
+void ChatClient::sendDeliveryReceipt(const QString& local_id) {
+    const QString normalized_local_id = local_id.trimmed();
+    if (normalized_local_id.isEmpty()) {
+        emit serverError(QStringLiteral("送达回执缺少 local_id"));
+        return;
+    }
+    if (m_state != AuthState::authenticated) {
+        emit serverError(QStringLiteral("未认证，无法发送送达回执"));
+        return;
+    }
+
+    QJsonObject object;
+    object["local_id"] = normalized_local_id;
+    const auto body = QJsonDocument(object).toJson(QJsonDocument::Compact);
+
+    QString error;
+    if (!writeFrame(static_cast<quint8>(protocol::MessageType::delivery_receipt), body, error)) {
+        emit serverError(QStringLiteral("送达回执发送失败：") + error);
+    }
+}
+
 // ==================== 模块：Socket 事件处理 ====================
 // 功能：TCP 连接成功后停止连接计时器，并立即发送认证帧。
 void ChatClient::onSocketConnected() {
@@ -310,6 +332,9 @@ void ChatClient::dispatchFrame(const quint8 type, const QByteArray& body) {
     case static_cast<quint8>(protocol::MessageType::chat_ack):
         handleChatAckBody(body);
         break;
+    case static_cast<quint8>(protocol::MessageType::delivery_receipt):
+        handleDeliveryReceiptBody(body);
+        break;
     default:
         emit serverError(QStringLiteral("收到未知消息类型"));
         break;
@@ -420,6 +445,32 @@ void ChatClient::handleChatAckBody(const QByteArray& body) {
         emit serverError(QStringLiteral("聊天确认消息字段错误"));
         return;
     }
-
     emit chatMessageAccepted(makeMessageStateUpdate(local_id, ChatMessageStatus::Accepted));
+}
+
+void ChatClient::handleDeliveryReceiptBody(const QByteArray& body)
+{
+    QJsonParseError parse_error;
+    const auto document = QJsonDocument::fromJson(body,&parse_error);
+    if (parse_error.error != QJsonParseError::NoError || !document.isObject()) {
+        emit serverError(QString::fromUtf8(body));
+        return;
+    }
+    const QJsonObject object = document.object();
+
+    const QJsonValue local_id_value = object.value("local_id");
+    const QJsonValue status_value = object.value("status");
+    //toString() 会把非字符串悄悄转换为空串,先显式类型校验
+    if (!local_id_value.isString() || !status_value.isString()) {
+        emit serverError(QStringLiteral("送达确认消息字段类型错误"));
+        return;
+    }
+
+    const QString local_id = local_id_value.toString().trimmed();
+    const QString status = status_value.toString();
+    if (local_id.isEmpty() || status != QStringLiteral("delivered")) {
+        emit serverError(QStringLiteral("投递确认消息字段错误"));
+        return;
+    }
+    emit chatMessageDelivered(makeMessageStateUpdate(local_id, ChatMessageStatus::Delivered));
 }

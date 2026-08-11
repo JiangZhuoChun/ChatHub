@@ -51,6 +51,8 @@ private slots:
     // 功能：将发送失败的消息气泡标记为失败，并显示可点击的重试按钮。
     void onChatSendFailed(const ChatMessage& update);
 
+    void onChatMessageDelivered(const ChatMessage& update);
+
     //4.接收消息槽
     // ==================== 模块：接收消息处理 ====================
     // 功能：将服务端转发的聊天消息渲染为收到消息气泡。

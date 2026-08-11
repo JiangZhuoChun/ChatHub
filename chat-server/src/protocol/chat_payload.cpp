@@ -111,4 +111,32 @@ chatPayloadResult parseChatPayload(const std::string_view body) {
             send_at_str};
 }
 
+
+DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(const std::string_view body)
+{
+    boost::system::error_code error;
+    const auto value = boost::json::parse(
+        boost::json::string_view(body.data(), body.size()), error);
+
+    if (error || !value.is_object()) {
+        return {DeliveryReceiptPayloadError::invalid_json, {}};
+    }
+    const auto* local_id = value.as_object().if_contains("local_id");
+    if (!local_id) {
+        return {DeliveryReceiptPayloadError::missing_local_id, {}};
+    }
+    if (!local_id->is_string()) {
+        return {DeliveryReceiptPayloadError::local_id_not_string, {}};
+    }
+    const auto& json_local_id = local_id->as_string();
+    const std::string local_id_str(json_local_id.data(), json_local_id.size());
+    if (isBlank(local_id_str)) {
+        return {DeliveryReceiptPayloadError::blank_local_id, {}};
+    }
+    if (local_id_str.size() > kMaxLocalIdLength) {
+        return {DeliveryReceiptPayloadError::local_id_too_long, {}};
+    }
+    return {DeliveryReceiptPayloadError::none, local_id_str};
+}
+
 } // protocol 命名空间结束

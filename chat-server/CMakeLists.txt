@@ -33,12 +33,16 @@ target_compile_definitions(chat-server PRIVATE
 add_executable(frame_decoder_test
         examples/frame_decoder_test.cpp
         src/protocol/frame_decoder.cpp
+        src/protocol/chat_payload.cpp
 )
 add_executable(jwt_demo
         examples/jwt_demo.cpp
 )
 
-target_include_directories(frame_decoder_test PRIVATE ${CHAT_SERVER_INCLUDES})
+target_include_directories(frame_decoder_test PRIVATE
+        ${CHAT_SERVER_INCLUDES}
+        ${BOOST_INCLUDE_DIR}
+)
 target_link_libraries(frame_decoder_test PRIVATE ws2_32 mswsock)
 target_compile_definitions(frame_decoder_test PRIVATE
         ASIO_STANDALONE

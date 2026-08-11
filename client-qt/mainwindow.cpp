@@ -163,6 +163,20 @@ void MainWindow::onChatSendFailed(const ChatMessage& update)
     statusBar()->showMessage(QStringLiteral("消息发送失败：") + update.failure_reason);
 }
 
+void MainWindow::onChatMessageDelivered(const ChatMessage &update) {
+    ChatMessage* message = findMessageByLocalId(update.local_id);
+    if (message == nullptr) {
+        statusBar()->showMessage(QStringLiteral("收到未知送达回执"));
+        return;
+    }
+    message->status = update.status;
+    message->failure_reason = update.failure_reason;
+    if (m_currentPeer == message->to) {
+        renderCurrentConversation();
+    }
+    statusBar()->showMessage(QStringLiteral("消息已送达"));
+}
+
 
 // ==================== 模块：接收消息处理 ====================
 // 功能：将服务端转发的消息渲染为收到状态的聊天气泡。
@@ -178,6 +192,7 @@ void MainWindow::onChatMessageReceived(const ChatMessage& message)
         m_unreadCounts[message.from]++;
     }
     refreshConversationItem(message.from);
+    m_chat->sendDeliveryReceipt(message.local_id);
 }
 
 // ==================== 模块：窗口初始化与连接状态辅助 ====================
@@ -199,6 +214,7 @@ void MainWindow::connectSlots()
     connect(m_chat, &ChatClient::chatMessageQueued, this, &MainWindow::onChatMessageQueued);
     connect(m_chat, &ChatClient::chatMessageAccepted, this, &MainWindow::onChatMessageAccepted);
     connect(m_chat, &ChatClient::chatSendFailed, this, &MainWindow::onChatSendFailed);
+    connect(m_chat, &ChatClient::chatMessageDelivered, this, &MainWindow::onChatMessageDelivered);
     connect(m_chat, &ChatClient::chatMessageReceived, this, &MainWindow::onChatMessageReceived);
     connect(ui->conversationList, &QListWidget::itemClicked, this, &MainWindow::onConversationItemClicked);
 
@@ -294,11 +310,19 @@ void MainWindow::appendMessageBubble(const ChatMessage& message)
     QString text = message.from + QStringLiteral(": ") + message.content;
     if (message.send_at.isValid())
     {
-        text = message.from + QStringLiteral(": ") + message.content + QStringLiteral("\n") +
-               QStringLiteral(" [") +
-               message.send_at.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) +
-               QStringLiteral("]");
+        text = message.from +
+            QStringLiteral(": ") +
+            message.content +
+            QStringLiteral("\n") +
+            QStringLiteral(" [") +
+            formatConversationTime(message.send_at, QDateTime::currentDateTimeUtc())+
+            QStringLiteral("]");
     }
+
+    if (message.status == ChatMessageStatus::Delivered && message.from == m_username) {
+        text += QStringLiteral("\n [已送达]");
+    }
+
     label->setText(text);
 
     label->setProperty("local_id", message.local_id);
@@ -488,6 +512,8 @@ QString MainWindow::chatMessageStatusToString(const ChatMessageStatus status)
             return QStringLiteral("received");
         case ChatMessageStatus::Sending:
             return QStringLiteral("sending");
+        case ChatMessageStatus::Delivered:
+            return QStringLiteral("delivered");
         default:
             return QStringLiteral("unknown");
     }

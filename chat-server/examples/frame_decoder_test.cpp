@@ -1,5 +1,5 @@
 #include "protocol/frame_decoder.h"
-
+#include "protocol/chat_payload.h"
 #include <iostream>
 
 // ==================== 模块：帧解码场景测试 ====================
@@ -71,6 +71,33 @@ bool testMaxBodyLength() {
     return result == protocol::DecodeResult::message_too_large && received.empty();
 }
 
+// 功能：验证不同类型的收据载荷解析结果。
+bool testDeliverReceiptPayload() {
+    const auto invalid_json =
+    protocol::parseDeliveryReceiptPayload(R"({"local_id":})");
+    const auto missing_id =
+        protocol::parseDeliveryReceiptPayload(R"({})");
+    const auto numeric_id =
+        protocol::parseDeliveryReceiptPayload(R"({"local_id":123})");
+    const auto blank_id =
+        protocol::parseDeliveryReceiptPayload(R"({"local_id":" \t\n"})");
+    const std::string too_long_body =
+        "{\"local_id\":\"" + std::string(65, 'x') + "\"}";
+    const auto too_long_id =
+        protocol::parseDeliveryReceiptPayload(too_long_body);
+
+    const auto result =
+    protocol::parseDeliveryReceiptPayload(R"({"local_id":"receipt-1"})");
+
+    return result.error ==protocol::DeliveryReceiptPayloadError::none &&
+           result.local_id == "receipt-1" &&
+           invalid_json.error == protocol::DeliveryReceiptPayloadError::invalid_json &&
+           missing_id.error == protocol::DeliveryReceiptPayloadError::missing_local_id &&
+           numeric_id.error == protocol::DeliveryReceiptPayloadError::local_id_not_string &&
+           blank_id.error == protocol::DeliveryReceiptPayloadError::blank_local_id &&
+           too_long_id.error == protocol::DeliveryReceiptPayloadError::local_id_too_long;
+}
+
 // ==================== 模块：测试结果汇总 ====================
 // 功能：输出单个测试用例的通过或失败结果，并返回其布尔状态。
 bool runTest(const char* name, const bool passed) {
@@ -96,6 +123,9 @@ bool testAll() {
         all_pass = false;
     }
     if (!runTest("max body length", testMaxBodyLength())) {
+        all_pass = false;
+    }
+    if (!runTest("delivery receipt payload", testDeliverReceiptPayload())) {
         all_pass = false;
     }
     return all_pass;

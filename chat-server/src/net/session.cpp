@@ -287,8 +287,12 @@ void Session::handlerMessage(const protocol::Message& message) {
         break;
     case protocol::MessageType::chat_ack:
         break;
+    case protocol::MessageType::delivery_receipt:
+        m_on_message(m_id, message);
+        break;
     }
 }
+
 
 // ==================== 模块：关闭与日志 ====================
 // 功能：仅第一次调用时标记会话已断开，并通知 Server 清理对应会话记录。

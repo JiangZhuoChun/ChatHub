@@ -10,6 +10,7 @@ enum class ChatMessageStatus {
     Accepted,
     Failed,
     Received,
+    Delivered
 };
 
 // 功能：表示一条完整聊天记录，不包含任何 Qt 控件。

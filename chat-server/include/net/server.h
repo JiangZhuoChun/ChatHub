@@ -7,6 +7,7 @@
 
 namespace net {
 
+
 // ==================== 模块：聊天服务器 ====================
 class Server {
 public:
@@ -18,6 +19,19 @@ public:
     void start();
 
 private:
+
+    struct PendingDelivery
+    {
+        std::string sender_username;
+        SessionId sender_session_id;
+    };
+
+  // 接收者用户名
+  // └─ local_id
+  //      └─ { 原发送者用户名, 原发送者会话 ID }
+    using PendingDeliveryMap = std::unordered_map
+        <std::string,std::unordered_map<std::string,PendingDelivery>>;
+
     // 功能：接受一个连接、创建 Session、登记在线表，并继续等待下一次连接。
     void doAccept();
 
@@ -34,6 +48,16 @@ private:
 
     // 功能：校验发送者和接收者在线状态，向接收者转发消息并回复发送确认。
     void sendToUser(SessionId sender_id, const protocol::Message& message);
+
+    void handleDeliveryReceipt(SessionId receipt_sender_id,const protocol::Message& message);
+
+    // 功能：功能：记录待投递消息，避免重复投递。
+    bool rememberPendingDelivery(const std::string& recipient_username,
+                                    const std::string& local_id,
+                                    const std::string& sender_username,
+                                    SessionId sender_session_id);
+
+    void removePendingDeliveriesForSession(SessionId disconnected_session_id,const std::string& disconnected_username);
 
     // ==================== 模块：并发执行资源 ====================
     // 功能：保证在线会话表和用户名映射只在 Server 的串行执行器中访问。
@@ -59,6 +83,8 @@ private:
 
     // 功能：将会话标识反向映射到认证用户名，供断开清理使用。
     std::unordered_map<SessionId, std::string> m_session_to_username;
+
+    PendingDeliveryMap m_pendingDeliveries;
 };
 
 } // net 命名空间结束

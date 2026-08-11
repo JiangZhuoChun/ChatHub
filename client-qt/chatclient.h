@@ -31,6 +31,8 @@ public:
     // 失败：未认证、参数为空或帧写入失败时，通过 chatSendFailed() 通知调用方。
     void sendChatMessage(ChatMessage message);
 
+    void sendDeliveryReceipt(const QString& local_id);
+
 signals:
     // ==================== 模块：认证与连接结果通知 ====================
     // 功能：通知认证帧已经写入客户端发送缓冲区。
@@ -54,6 +56,8 @@ signals:
 
     // 功能：通知服务端已接受 local_id 对应的聊天消息。
     void chatMessageAccepted(const ChatMessage& update);
+
+    void chatMessageDelivered(const ChatMessage& update);
 
     // 功能：通知收到服务端转发的聊天消息及其发送者、接收者和时间。
     void chatMessageReceived(const ChatMessage& message);
@@ -138,6 +142,8 @@ private:
 
     // 功能：解析聊天确认正文，并通知界面更新 local_id 对应消息状态。
     void handleChatAckBody(const QByteArray& body);
+
+    void handleDeliveryReceiptBody(const QByteArray& body);
 
     // ==================== 模块：网络资源 ====================
     // 功能：维护与 chat-server 的 TCP 连接，并产生连接与读写事件。
