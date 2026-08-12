@@ -52,6 +52,8 @@ public:
 
     // 功能：将待发送消息投递到本会话 strand，避免多个线程并发写同一 Socket。
     void send(protocol::MessageType type, std::string body);
+    // 功能：Server 可调用；它只把关闭任务 asio::post 到 m_strand
+    void requestClose();
 
 private:
     // ==================== 模块：异步读取与帧解码 ====================
@@ -78,9 +80,10 @@ private:
     // 功能：根据认证状态和消息类型处理认证、聊天、心跳及错误帧。
     void handlerMessage(const protocol::Message& message);
 
+
     // ==================== 模块：关闭与日志 ====================
     // 功能：幂等地标记会话断开，并通知 Server 从在线表中移除当前会话。
-    void close();
+    void closeOnStrand();
 
     // 功能：统一输出会话相关事件，便于排查连接和协议问题。
     static void log(std::string_view event);

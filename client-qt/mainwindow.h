@@ -7,7 +7,7 @@
 #include <QString>
 #include <QList>
 #include <QDateTime>
-
+#include <QStringList>
 class ChatClient;
 class QWidget;
 class QListWidgetItem;
@@ -31,7 +31,7 @@ private slots:
     //1.连接状态槽
     // ==================== 模块：窗口与连接状态 ====================
     // 功能：聊天连接断开时更新状态栏和发送按钮状态。
-    void onDisconnected() const;
+    void onDisconnected();
 
     //2.用户操作槽
     // ==================== 模块：用户发送操作 ====================
@@ -41,6 +41,8 @@ private slots:
     void onRetryClicked(const QString& local_id);
     // 功能：点击会话列表项时更新当前会话。
     void onConversationItemClicked(const QListWidgetItem* item);
+
+    void onOnlineUserItemClicked(const QListWidgetItem* item);
 
     //3.消息状态槽
     // ==================== 模块：消息发送状态处理 ====================
@@ -57,7 +59,6 @@ private slots:
     // ==================== 模块：接收消息处理 ====================
     // 功能：将服务端转发的聊天消息渲染为收到消息气泡。
     void onChatMessageReceived(const ChatMessage& message);
-
 
 
 private:
@@ -97,6 +98,8 @@ private:
     // 功能：将指定联系人的会话项移动到会话列表顶部。
     void moveConversationItemToTop(const QString& peer);
 
+    void updateOnlineUsers(const QStringList& users);
+
 
     // ==================== 模块：消息查询、依赖与状态 ====================
     //1.消息查询辅助
@@ -114,6 +117,8 @@ private:
     //3.当前用户与会话状态
     // 功能：保存已认证用户，用于判定消息是本人发送还是对方发送。
     QString m_username;
+
+    QStringList m_onlineUsers;
     //与某个联系人的全部消息---联系人 → 消息列表
     QHash<QString,QList<ChatMessage>> m_conversations;
     // 功能：当前右侧正在显示的会话联系人。

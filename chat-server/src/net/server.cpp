@@ -6,7 +6,8 @@
 
 #include <iostream>
 #include <string_view>
-
+#include <algorithm>
+#include <vector>
 namespace {
 
 // ==================== 模块：路由错误正文构造 ====================
@@ -100,10 +101,10 @@ void Server::doAccept() {
                                                    std::string username) {
                         asio::post(
                             m_strand,
-                            // 功能：在 Server strand 中写入双向用户名和会话标识映射。
+                            // 功能: 注册已认证会话并广播在线用户列表。
                             [this, authenticated_session_id, username = std::move(username)] {
-                                m_username_to_session.emplace(username, authenticated_session_id);
-                                m_session_to_username.emplace(authenticated_session_id, username);
+                                registerAuthenticatedSession(authenticated_session_id, username);
+                                broadcastOnlineUsers();
                             });
                     };
 
@@ -129,19 +130,39 @@ void Server::addSession(const SessionId session_id, const SessionPtr& session) {
 // 功能：删除会话表、用户名到会话表和会话到用户名表中的断开连接记录。
 void Server::removeSession(const SessionId session_id)
 {
-    std::string disconnected_username;
-    if (const auto it = m_session_to_username.find(session_id);
-        it != m_session_to_username.end()) {
-        disconnected_username = it->second;
-        m_username_to_session.erase(disconnected_username);
-        m_session_to_username.erase(session_id);
+    // 只有该用户名确实没有被新会话接管时才保存它：
+    // 非空表示“接收者已离线”，供待送达记录按接收者整组清理。
+    std::string recipient_username_to_clean;
+
+    // 断开事件只带 session_id，先通过反向映射找出旧会话原本的用户名。
+    if (const auto reverse_it = m_session_to_username.find(session_id);
+        reverse_it != m_session_to_username.end() )
+    {
+        const std::string username = reverse_it->second;
+
+        // 同名新连接可能已把 username 指向另一个 SessionId。
+        // 只有正向映射仍指向本次断开的旧会话，才说明该用户名真的离线。
+        if (const auto forward_it = m_username_to_session.find(username);
+            forward_it != m_username_to_session.end() && forward_it->second == session_id)
+        {
+            m_username_to_session.erase(forward_it);
+            recipient_username_to_clean = username;
+        }
+        // 无论是否被新会话接管，这条旧 session_id -> username 反向映射都已失效。
+        m_session_to_username.erase(reverse_it);
     }
 
-    removePendingDeliveriesForSession(session_id,disconnected_username);
-
-    if (const auto rm_count = m_sessions.erase(session_id); rm_count != 0) {
+    // 始终按旧会话 ID 清理其作为发送者的记录；
+    // 只有普通断开才传入用户名，避免顶替场景误删新会话作为接收者的记录。
+    removePendingDeliveriesForSession(session_id,recipient_username_to_clean);
+    if (const auto rm_count = m_sessions.erase(session_id);
+        rm_count != 0){
         std::cout << "客户端 #" << session_id << " 已移出在线表，当前在线："
                   << m_sessions.size() << std::endl;
+    }
+
+    if (!recipient_username_to_clean.empty()) {
+        broadcastOnlineUsers();
     }
 }
 
@@ -163,31 +184,40 @@ void Server::onSessionMessage(const SessionId sender_id, const protocol::Message
 // 功能：检查发送者和接收者在线状态，转发聊天帧并向发送者发送确认帧。
 // 失败：发送者未登记或接收者离线时，仅向发送者发送带 local_id 的错误帧。
 void Server::sendToUser(const SessionId sender_id, const protocol::Message& message) {
+    //1. 解析消息正文
     const auto payload = protocol::parseChatPayload(message.body);
     if (payload.error != protocol::ChatPayloadError::none) {
         return;
     }
-
     const auto sender_it = m_sessions.find(sender_id);
     const auto sender_username_it = m_session_to_username.find(sender_id);
     const auto target_it = m_username_to_session.find(payload.to);
+    //2. 确认发送 Session 还存在
     if (sender_it == m_sessions.end()) {
         return;
     }
-
+    //3. 确认它有认证身份
     if (sender_username_it == m_session_to_username.end()) {
         const std::string error_body = makeRouteErrorBody(
             payload.local_id, "sender_not_registered", "发送者会话尚未完成注册");
         sender_it->second->send(protocol::MessageType::error, error_body);
         return;
     }
+    //4. 确认它仍是该身份的当前活动会话
+    if (!isCurrentAuthenticatedSession(sender_id,sender_username_it->second)) {
+        sender_it->second->send(
+            protocol::MessageType::error,
+            makeRouteErrorBody(payload.local_id,"session_replaced","当前登录已在其他连接接管"));
+        return;
+    }
+    //5. 确认接收者在线
     if (target_it == m_username_to_session.end()) {
         const std::string error_body =
             makeRouteErrorBody(payload.local_id, "recipient_offline", "接收者不在线");
         sender_it->second->send(protocol::MessageType::error, error_body);
         return;
     }
-
+    //6. 确认接收 Session 还存在
     const auto recv_it = m_sessions.find(target_it->second);
     if (recv_it == m_sessions.end()) {
         const std::string error_body = makeRouteErrorBody(
@@ -195,7 +225,7 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
         sender_it->second->send(protocol::MessageType::error, error_body);
         return;
     }
-
+    //7. 确认消息 local_id 不存在，避免重复投递
     if (!rememberPendingDelivery(payload.to, payload.local_id,
         sender_username_it->second, sender_id))
     {
@@ -204,6 +234,7 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
             sender_it->second->send(protocol::MessageType::error,error_body);
         return;
     }
+
     boost::json::object forwarded;
     forwarded["local_id"] = payload.local_id;
     forwarded["from"] = sender_username_it->second;
@@ -240,6 +271,15 @@ void Server::handleDeliveryReceipt(SessionId receipt_sender_id, const protocol::
     if (username_it == m_session_to_username.end()) {
         return;
     }
+
+    //确认它仍是该身份的当前活动会话
+    if (!isCurrentAuthenticatedSession(receipt_sender_id,username_it->second)) {
+        sender_it->second->send(
+            protocol::MessageType::error,
+            makeDeliveryReceiptErrorBody("session_replaced", "当前登录已在其他连接接管"));
+        return;
+    }
+
     //B 的待送达消息表，用于检查 local_id
     const auto recipient_it = m_pendingDeliveries.find(username_it->second);
     if (recipient_it == m_pendingDeliveries.end())
@@ -317,5 +357,62 @@ void Server::removePendingDeliveriesForSession(SessionId disconnected_session_id
             ++recipient_it;
         }
     }
+}
+// 功能：构建在线用户列表帧的 body 部分。
+std::optional<std::string> Server::buildOnlineUsersBody() {
+    std::vector<std::string> users;
+    for (const auto& it : m_username_to_session) {
+        const auto& username =it.first;
+        users.push_back(username);
+    }
+    std::sort(users.begin(),users.end());
+
+    boost::json::array array;
+    for (const auto& username : users) {
+        if (username.empty()) {
+            return std::nullopt;
+        }
+        array.emplace_back(username);
+    }
+    boost::json::object object;
+    object["users"] = std::move(array);
+    const auto& body =boost::json::serialize(object);
+    if (body.size() > protocol::kMaxFrameBodyLength) {
+        return std::nullopt;
+    }
+    return body;
+}
+// 功能：广播在线用户列表。
+void Server::broadcastOnlineUsers() {
+    const auto body = buildOnlineUsersBody();
+    if (!body.has_value()) {
+        std::cerr << "无正文信息" << std::endl;
+        return;
+    }
+    for (const auto& it : m_username_to_session) {
+        if (auto session_it = m_sessions.find(it.second); session_it != m_sessions.end()) {
+            session_it->second->send(protocol::MessageType::online_users, body.value());
+        }
+    }
+}
+// 功能：注册已认证会话。
+void Server::registerAuthenticatedSession(const SessionId session_id, const std::string &username) {
+    if (const auto& old_it = m_username_to_session.find(username);
+        old_it != m_username_to_session.end() && old_it->second != session_id)
+    {
+       if (const auto& session_it = m_sessions.find(old_it->second);
+           session_it != m_sessions.end())
+       {
+           session_it->second->requestClose();
+       }
+    }
+
+    m_username_to_session.insert_or_assign(username,session_id);
+    m_session_to_username.insert_or_assign(session_id,username);
+}
+// 功能：检查会话是否当前用户会话。
+bool Server::isCurrentAuthenticatedSession(const SessionId session_id, const std::string &username) const {
+    const auto it = m_username_to_session.find(username);
+    return it != m_username_to_session.end() && it->second == session_id;
 }
 } // net 命名空间结束

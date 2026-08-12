@@ -25,6 +25,7 @@ MainWindow::MainWindow(ChatClient* chat_client, QString username, QWidget* paren
     ui->setupUi(this);
     setupUiState();
     connectSlots();
+    updateOnlineUsers(m_chat->onlineUsers());
 }
 // 功能：释放 Qt 设计器创建的主窗口界面对象。
 MainWindow::~MainWindow() {delete ui;}
@@ -33,9 +34,10 @@ MainWindow::~MainWindow() {delete ui;}
 //1.连接信号槽
 // ==================== 模块：窗口与连接状态 ====================
 // 功能：连接断开时禁用发送按钮，并提示用户重新登录。
-void MainWindow::onDisconnected() const
+void MainWindow::onDisconnected()
 {
     updateConnectionState(false, QStringLiteral("连接已断开，请重新登录"));
+    updateOnlineUsers(QStringList{});
 }
 
 //2.用户操作槽
@@ -63,7 +65,6 @@ void MainWindow::onSendClicked() {
     // 所有校验通过先保存再发送
     const ChatMessage message = makeOutgoingChatMessage(real_to, content);
     m_conversations[message.to].append(message);
-
     //1.确保会话列表项存在
     ensureConversationItem(message.to);
     //2. 移动会话列表项到顶部
@@ -99,10 +100,22 @@ void MainWindow::onRetryClicked(const QString& local_id)
 void MainWindow::onConversationItemClicked(const QListWidgetItem *item)
 {
     if (item == nullptr) {return;}
+
     m_currentPeer = item->data(Qt::UserRole).toString();
     markConversationRead(m_currentPeer);
     ui->peerNameLabel->setText(m_currentPeer);
     renderCurrentConversation();
+}
+
+void MainWindow::onOnlineUserItemClicked(const QListWidgetItem *item)
+{
+    if (item == nullptr){return;}
+
+    const auto username = item->data(Qt::UserRole).toString();
+    if (username.isEmpty()){return;}
+
+    ui->recipientEdit->setText(username);
+    ui->statusbar->showMessage(QStringLiteral("已选择联系人：") + username);
 }
 
 
@@ -119,8 +132,11 @@ void MainWindow::onChatMessageQueued(const ChatMessage& message)
     } else {
         // 防御分支：即使调用方未提前保存，也以完整模型补建本地记录。
         m_conversations[message.to].append(message);
+
         ensureConversationItem(message.to);
+
         moveConversationItemToTop(message.to);
+
         refreshConversationItem(message.to);
     }
 
@@ -216,16 +232,21 @@ void MainWindow::connectSlots()
     connect(m_chat, &ChatClient::chatSendFailed, this, &MainWindow::onChatSendFailed);
     connect(m_chat, &ChatClient::chatMessageDelivered, this, &MainWindow::onChatMessageDelivered);
     connect(m_chat, &ChatClient::chatMessageReceived, this, &MainWindow::onChatMessageReceived);
-    connect(ui->conversationList, &QListWidget::itemClicked, this, &MainWindow::onConversationItemClicked);
+    connect(m_chat, &ChatClient::onlineUsersChanged, this, &MainWindow::updateOnlineUsers);
 
-    connect(m_chat, &ChatClient::authSucceeded, this,
-            // 功能：认证成功后将状态标签和发送按钮切换为可用状态。
-            [this] {
+    connect(ui->conversationList, &QListWidget::itemClicked, this, &MainWindow::onConversationItemClicked);
+    connect(ui->onlineUsersList, &QListWidget::itemClicked, this, &MainWindow::onOnlineUserItemClicked);
+
+    connect(m_chat, &ChatClient::authSucceeded, this,[this] {
+        // 功能：认证成功后将状态标签和发送按钮切换为可用状态
                 updateConnectionState(true, QStringLiteral("连接正常"));
-            });
+    });
+    connect(m_chat,&ChatClient::serverError,this,[this](const QString& reason) {
+       statusBar()->showMessage(QStringLiteral("服务器错误：") + reason);
+    });
 
     updateConnectionState(m_chat->isAuthenticated(),
-                          m_chat->isAuthenticated()
+                                m_chat->isAuthenticated()
                               ? QStringLiteral("连接正常")
                               : QStringLiteral("连接未认证"));
 }
@@ -256,8 +277,7 @@ ChatMessage MainWindow::makeOutgoingChatMessage(const QString &to, const QString
 
 //==================== 模块：会话与气泡辅助 ====================
 // 功能：确保会话列表中存在指定联系人，不存在则添加。
-void MainWindow::ensureConversationItem(const QString& peer)
-{
+void MainWindow::ensureConversationItem(const QString& peer) {
     for (int i = 0; i < ui->conversationList->count(); ++i) {
         const auto item = ui->conversationList->item(i);
         if (peer == item->data(Qt::UserRole).toString())
@@ -407,8 +427,9 @@ void MainWindow::markConversationRead(const QString &peer)
 // 功能：生成会话预览文本。
 QString MainWindow::makeConversationPreview(const QString &peer) const
 {
-    const auto chatMessage_it = m_conversations.constFind(peer);
-    if (chatMessage_it != m_conversations.end()) {
+    if (const auto chatMessage_it = m_conversations.constFind(peer);
+        chatMessage_it != m_conversations.end())
+    {
         if (const auto& messages = chatMessage_it.value(); !messages.isEmpty())
         {
             const auto& message = messages.last();
@@ -439,14 +460,14 @@ QString MainWindow::makeConversationPreview(const QString &peer) const
 QString MainWindow::formatConversationTime(const QDateTime &send_at, const QDateTime &now)
 {
     if (!send_at.isValid() || !now.isValid()) {
-        return QString();
+        return "";
     }
     // 2. 统一转为本地日期对比
-    QDateTime localSend = send_at.toLocalTime();
-    QDateTime localNow = now.toLocalTime();
+    const QDateTime localSend = send_at.toLocalTime();
+    const QDateTime localNow = now.toLocalTime();
 
-    QDate sendDate = localSend.date();
-    QDate today = localNow.date();
+    const QDate sendDate = localSend.date();
+    const QDate today = localNow.date();
 
     //今天
     if (sendDate == today) {
@@ -462,7 +483,9 @@ QString MainWindow::formatConversationTime(const QDateTime &send_at, const QDate
         return localSend.toString("MM-dd");
     }
     // 跨年
-    return localSend.toString("yyyy-MM-dd");
+    else {
+        return localSend.toString("yyyy-MM-dd");
+    }
 }
 
 QString MainWindow::makeConversationTimeText(const QString &peer) const
@@ -470,9 +493,10 @@ QString MainWindow::makeConversationTimeText(const QString &peer) const
     if (peer.isEmpty()) {
         return "";
     }
-    const auto chatMessage_it = m_conversations.constFind(peer);
 
-    if (chatMessage_it != m_conversations.end()) {
+    if (const auto chatMessage_it = m_conversations.constFind(peer);
+        chatMessage_it != m_conversations.end())
+    {
         if (const auto& messages = chatMessage_it.value(); !messages.isEmpty())
         {
             const auto& message = messages.last();
@@ -497,6 +521,21 @@ void MainWindow::moveConversationItemToTop(const QString &peer)
             return;
         }
     }
+}
+
+void MainWindow::updateOnlineUsers(const QStringList &users)
+{
+    m_onlineUsers = users;
+    ui->onlineUsersList->clear();
+    for (const auto& username : m_onlineUsers) {
+        if (username == m_username) {
+            continue;
+        }
+       auto* item = new QListWidgetItem(username);
+        item->setData(Qt::UserRole, username);
+        ui->onlineUsersList->addItem(item);
+    }
+    ui->onlineUsersList->setEnabled(ui->onlineUsersList->count() >0);
 }
 
 // ==================== 模块：消息查询辅助 ====================

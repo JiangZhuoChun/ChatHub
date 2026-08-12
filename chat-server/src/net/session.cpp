@@ -47,6 +47,13 @@ void Session::send(const protocol::MessageType type, std::string body) {
                });
 }
 
+void Session::requestClose() {
+    const auto self = shared_from_this();
+    asio::post(m_strand, [self] {
+        self->closeOnStrand();
+    });
+}
+
 // ==================== 模块：异步读取与帧解码 ====================
 // 功能：异步读取 Socket 数据，解码完整帧并递归安排下一次读取。
 // 失败：读取错误或协议错误时关闭会话，触发 Server 的在线表清理回调。
@@ -66,7 +73,7 @@ void Session::doRead() {
                     } else {
                         std::cerr << "错误：" << error.message() << std::endl;
                     }
-                    self->close();
+                    self->closeOnStrand();
                     return;
                 }
 
@@ -78,7 +85,7 @@ void Session::doRead() {
                     });
                 if (result != protocol::DecodeResult::ok) {
                     log("协议错误，关闭当前连接");
-                    self->close();
+                    self->closeOnStrand();
                     return;
                 }
 
@@ -98,7 +105,7 @@ void Session::enqueueAndWrite(const protocol::MessageType type, const std::strin
     if (m_write_queue.size() >= kMaxWriteQueueSize) {
         std::cout << "错误：发送队列已满：" << m_write_queue.size() << "/"
                   << kMaxWriteQueueSize << "关闭慢客户端" << std::endl;
-        close();
+        closeOnStrand();
         return;
     }
 
@@ -124,7 +131,7 @@ void Session::writeFrame() {
             [self, this](const std::error_code error, const std::size_t bytes_transferred) {
                 if (error) {
                     std::cerr << "错误,发送失败" << error.message() << std::endl;
-                    self->close();
+                    self->closeOnStrand();
                     return;
                 }
 
@@ -178,11 +185,11 @@ void Session::handlerMessage(const protocol::Message& message) {
                 }
             } else {
                 log("认证失败，关闭连接");
-                close();
+                closeOnStrand();
             }
         } else {
             log("未认证先发消息，关闭连接");
-            close();
+            closeOnStrand();
         }
         return;
     }
@@ -296,11 +303,16 @@ void Session::handlerMessage(const protocol::Message& message) {
 
 // ==================== 模块：关闭与日志 ====================
 // 功能：仅第一次调用时标记会话已断开，并通知 Server 清理对应会话记录。
-void Session::close() {
+void Session::closeOnStrand() {
     if (m_disconnected) {
         return;
     }
     m_disconnected = true;
+    //优雅地关闭 socket
+    std::error_code ignored_error;
+    m_socket.shutdown(asio::ip::tcp::socket::shutdown_both, ignored_error);
+    m_socket.close(ignored_error);
+
     m_on_disconnect(m_id);
 }
 

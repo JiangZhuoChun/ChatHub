@@ -3,10 +3,10 @@
 #include "protocol/chat_protocol.h"
 
 #include <QHostAddress>
-#include <QJsonDocument>
 #include <QJsonObject>
 #include <QUuid>
-
+#include <QJsonArray>
+#include <QSet>
 // ==================== 模块：生命周期 ====================
 // 功能：创建套接字和连接计时器，并完成所有内部信号槽连接。
 ChatClient::ChatClient(QObject* parent)
@@ -33,6 +33,7 @@ void ChatClient::connectWithToken(const QString& token) {
 
     m_token = token;
     m_received_buffer.clear();
+    clearOnlineUsers();
     m_state = AuthState::connecting;
     m_connect_timer.start(5000);
 
@@ -43,6 +44,7 @@ void ChatClient::connectWithToken(const QString& token) {
 void ChatClient::disconnectFromServer() {
     m_connect_timer.stop();
     m_state = AuthState::idle;
+    clearOnlineUsers();
     m_socket.disconnectFromHost();
 }
 
@@ -113,6 +115,10 @@ void ChatClient::sendDeliveryReceipt(const QString& local_id) {
     }
 }
 
+QStringList ChatClient::onlineUsers() const {
+    return m_online_users;
+}
+
 // ==================== 模块：Socket 事件处理 ====================
 // 功能：TCP 连接成功后停止连接计时器，并立即发送认证帧。
 void ChatClient::onSocketConnected() {
@@ -135,6 +141,7 @@ void ChatClient::onSocketError(const QAbstractSocket::SocketError socket_error) 
     m_connect_timer.stop();
     const AuthState old_state = m_state;
     m_state = AuthState::idle;
+    clearOnlineUsers();
 
     if (old_state == AuthState::waitingAuthResult) {
         emit authFailed("认证连接异常：" + m_socket.errorString());
@@ -150,6 +157,7 @@ void ChatClient::onSocketDisconnected() {
     m_connect_timer.stop();
     const AuthState old_state = m_state;
     m_state = AuthState::idle;
+    clearOnlineUsers();
 
     if (old_state == AuthState::waitingAuthResult) {
         emit authFailed("服务器在认证前断开连接");
@@ -335,6 +343,9 @@ void ChatClient::dispatchFrame(const quint8 type, const QByteArray& body) {
     case static_cast<quint8>(protocol::MessageType::delivery_receipt):
         handleDeliveryReceiptBody(body);
         break;
+        case static_cast<quint8>(protocol::MessageType::online_users):
+        handleOnlineUsersBody(body);
+        break;
     default:
         emit serverError(QStringLiteral("收到未知消息类型"));
         break;
@@ -473,4 +484,50 @@ void ChatClient::handleDeliveryReceiptBody(const QByteArray& body)
         return;
     }
     emit chatMessageDelivered(makeMessageStateUpdate(local_id, ChatMessageStatus::Delivered));
+}
+
+void ChatClient::handleOnlineUsersBody(const QByteArray &body)
+{
+    QJsonParseError parse_error;
+    const auto document = QJsonDocument::fromJson(body,&parse_error);
+    if (parse_error.error != QJsonParseError::NoError || !document.isObject()) {
+        emit serverError(QString::fromUtf8(body));
+        return;
+    }
+    const QJsonObject object = document.object();
+    const QJsonValue users_value = object.value(QStringLiteral("users"));
+    if (!users_value.isArray()) {
+        emit serverError(QStringLiteral("在线用户列表字段错误"));
+        return;
+    }
+    QStringList users;
+    //存储不重复的元素
+    QSet<QString> seen_users;
+    const QJsonArray users_array = users_value.toArray();
+    for (const QJsonValue& user_value : users_array)
+    {
+        const QString username = user_value.toString().trimmed();
+        if (!user_value.isString() || username.isEmpty()) {
+            emit serverError(QStringLiteral("在线用户列表包含无效用户名"));
+            return;
+        }
+        if (seen_users.contains(username)) {
+            emit serverError(QStringLiteral("在线用户列表包含重复用户名"));
+            return;
+        }
+        seen_users.insert(username);
+        users.append(username);
+    }
+    m_online_users = users;
+    emit onlineUsersChanged(users);
+}
+
+void ChatClient::clearOnlineUsers()
+{
+    if (m_online_users.isEmpty()) {
+        return;
+    }
+
+    m_online_users.clear();
+    emit onlineUsersChanged({});
 }

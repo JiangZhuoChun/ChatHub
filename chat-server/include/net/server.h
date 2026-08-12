@@ -4,6 +4,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <optional>
 
 namespace net {
 
@@ -58,6 +59,14 @@ private:
                                     SessionId sender_session_id);
 
     void removePendingDeliveriesForSession(SessionId disconnected_session_id,const std::string& disconnected_username);
+
+    std::optional<std::string>  buildOnlineUsersBody();
+
+    void broadcastOnlineUsers();
+
+    void registerAuthenticatedSession(SessionId session_id, const std::string& username);
+
+    bool isCurrentAuthenticatedSession(SessionId session_id, const std::string& username) const;
 
     // ==================== 模块：并发执行资源 ====================
     // 功能：保证在线会话表和用户名映射只在 Server 的串行执行器中访问。

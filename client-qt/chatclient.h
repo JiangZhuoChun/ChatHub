@@ -7,7 +7,7 @@
 #include <QString>
 #include <QTcpSocket>
 #include <QTimer>
-
+#include <QStringList>
 class ChatClient : public QObject {
     Q_OBJECT
 
@@ -33,6 +33,8 @@ public:
 
     void sendDeliveryReceipt(const QString& local_id);
 
+    QStringList onlineUsers() const;
+
 signals:
     // ==================== 模块：认证与连接结果通知 ====================
     // 功能：通知认证帧已经写入客户端发送缓冲区。
@@ -49,6 +51,8 @@ signals:
 
     // 功能：通知已经认证的连接随后断开。
     void disconnected();
+
+    void onlineUsersChanged(const QStringList& users);
 
     // ==================== 模块：聊天业务结果通知 ====================
     // 功能：通知聊天消息已经写入客户端发送缓冲区，并提供用于显示的发送时间。
@@ -102,6 +106,7 @@ private:
     static ChatMessage makeMessageStateUpdate(const QString& local_id,
         const ChatMessageStatus status,const QString& failure_reason = {});
 
+
     // ==================== 模块：协议帧编码与发送 ====================
     // 功能：将 type 和正文编码为 [魔数][版本][类型][长度][正文] 格式的字节帧。
     static QByteArray makeFrame(quint8 type, const QByteArray& body);
@@ -145,6 +150,11 @@ private:
 
     void handleDeliveryReceiptBody(const QByteArray& body);
 
+    void handleOnlineUsersBody(const QByteArray& body);
+
+    // 功能：清除已失效的在线快照，并通知已创建的界面同步清空。
+    void clearOnlineUsers();
+
     // ==================== 模块：网络资源 ====================
     // 功能：维护与 chat-server 的 TCP 连接，并产生连接与读写事件。
     QTcpSocket m_socket;
@@ -160,4 +170,6 @@ private:
 
     // 功能：保存当前连接和认证阶段，供事件处理函数决定错误通知类型。
     AuthState m_state{AuthState::idle};
+
+    QStringList m_online_users;
 };
