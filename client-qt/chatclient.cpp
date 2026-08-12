@@ -93,7 +93,7 @@ void ChatClient::sendChatMessage(ChatMessage message) {
     emit chatMessageQueued(message);
 }
 
-
+// 功能：在接收消息已写入本地模型并完成界面处理后，向服务端发送最终送达回执。
 void ChatClient::sendDeliveryReceipt(const QString& local_id) {
     const QString normalized_local_id = local_id.trimmed();
     if (normalized_local_id.isEmpty()) {
@@ -115,6 +115,7 @@ void ChatClient::sendDeliveryReceipt(const QString& local_id) {
     }
 }
 
+// 功能：返回最后一份有效在线用户快照，供晚创建的主窗口同步回填。
 QStringList ChatClient::onlineUsers() const {
     return m_online_users;
 }
@@ -459,6 +460,7 @@ void ChatClient::handleChatAckBody(const QByteArray& body) {
     emit chatMessageAccepted(makeMessageStateUpdate(local_id, ChatMessageStatus::Accepted));
 }
 
+// 功能：校验服务端返回的最终送达状态，并通知界面更新对应已有消息。
 void ChatClient::handleDeliveryReceiptBody(const QByteArray& body)
 {
     QJsonParseError parse_error;
@@ -486,6 +488,7 @@ void ChatClient::handleDeliveryReceiptBody(const QByteArray& body)
     emit chatMessageDelivered(makeMessageStateUpdate(local_id, ChatMessageStatus::Delivered));
 }
 
+// 功能：校验并缓存服务端在线用户快照，成功后通知界面整体刷新。
 void ChatClient::handleOnlineUsersBody(const QByteArray &body)
 {
     QJsonParseError parse_error;
@@ -522,6 +525,7 @@ void ChatClient::handleOnlineUsersBody(const QByteArray &body)
     emit onlineUsersChanged(users);
 }
 
+// 功能：清空已失效的在线快照；仅在状态变化时发送空快照通知。
 void ChatClient::clearOnlineUsers()
 {
     if (m_online_users.isEmpty()) {

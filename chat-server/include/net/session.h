@@ -19,7 +19,9 @@ class Session;
 // ==================== 模块：会话基础类型与回调 ====================
 // 功能：保存等待写入 Socket 的完整协议帧及其消息类型。
 struct WriteItem {
+    // 功能：记录该帧的业务类型，便于队列调试和协议观察。
     protocol::MessageType type;
+    // 功能：保存已完成编码、等待异步写出的完整协议帧。
     std::string frame;
 };
 
@@ -52,6 +54,7 @@ public:
 
     // 功能：将待发送消息投递到本会话 strand，避免多个线程并发写同一 Socket。
     void send(protocol::MessageType type, std::string body);
+
     // 功能：Server 可调用；它只把关闭任务 asio::post 到 m_strand
     void requestClose();
 

@@ -21,9 +21,11 @@ public:
 
 private:
 
-    struct PendingDelivery
-    {
+    // 功能：保存一条等待接收者回执的消息的原发送者归属。
+    struct PendingDelivery {
+        // 功能：标识原消息的认证发送者，供日志与后续业务扩展使用。
         std::string sender_username;
+        // 功能：定位原发送者当前会话，用于投递最终送达状态。
         SessionId sender_session_id;
     };
 
@@ -50,6 +52,7 @@ private:
     // 功能：校验发送者和接收者在线状态，向接收者转发消息并回复发送确认。
     void sendToUser(SessionId sender_id, const protocol::Message& message);
 
+    // 功能：校验接收者的送达回执，并将最终送达状态转发给原发送者。
     void handleDeliveryReceipt(SessionId receipt_sender_id,const protocol::Message& message);
 
     // 功能：功能：记录待投递消息，避免重复投递。
@@ -58,14 +61,19 @@ private:
                                     const std::string& sender_username,
                                     SessionId sender_session_id);
 
+    // 功能：删除断开会话作为发送者或真正离线接收者时遗留的待送达记录。
     void removePendingDeliveriesForSession(SessionId disconnected_session_id,const std::string& disconnected_username);
 
+    // 功能：从认证用户名映射生成稳定排序的 online_users JSON 正文。
     std::optional<std::string>  buildOnlineUsersBody();
 
+    // 功能：向全部已认证且仍有效的会话推送完整在线用户快照。
     void broadcastOnlineUsers();
 
+    // 功能：登记认证会话；同名登录时让新会话接管映射并请求关闭旧会话。
     void registerAuthenticatedSession(SessionId session_id, const std::string& username);
 
+    // 功能：判断会话是否仍是指定用户名当前有效的认证会话。
     bool isCurrentAuthenticatedSession(SessionId session_id, const std::string& username) const;
 
     // ==================== 模块：并发执行资源 ====================
@@ -93,6 +101,7 @@ private:
     // 功能：将会话标识反向映射到认证用户名，供断开清理使用。
     std::unordered_map<SessionId, std::string> m_session_to_username;
 
+    // 功能：保存尚未被接收者确认的消息，生命周期仅限当前服务进程。
     PendingDeliveryMap m_pendingDeliveries;
 };
 

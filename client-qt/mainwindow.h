@@ -42,6 +42,7 @@ private slots:
     // 功能：点击会话列表项时更新当前会话。
     void onConversationItemClicked(const QListWidgetItem* item);
 
+    // 功能：将点击的在线用户名回填到接收者输入框，不创建或切换会话。
     void onOnlineUserItemClicked(const QListWidgetItem* item);
 
     //3.消息状态槽
@@ -53,6 +54,7 @@ private slots:
     // 功能：将发送失败的消息气泡标记为失败，并显示可点击的重试按钮。
     void onChatSendFailed(const ChatMessage& update);
 
+    // 功能：将本地已有消息更新为 Delivered 状态，不新增气泡或改变会话顺序。
     void onChatMessageDelivered(const ChatMessage& update);
 
     //4.接收消息槽
@@ -98,6 +100,7 @@ private:
     // 功能：将指定联系人的会话项移动到会话列表顶部。
     void moveConversationItemToTop(const QString& peer);
 
+    // 功能：整体替换在线列表模型，过滤当前用户后重建在线联系人视图。
     void updateOnlineUsers(const QStringList& users);
 
 
@@ -118,6 +121,7 @@ private:
     // 功能：保存已认证用户，用于判定消息是本人发送还是对方发送。
     QString m_username;
 
+    // 功能：保存主窗口当前显示模型对应的完整在线用户快照。
     QStringList m_onlineUsers;
     //与某个联系人的全部消息---联系人 → 消息列表
     QHash<QString,QList<ChatMessage>> m_conversations;

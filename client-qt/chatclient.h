@@ -33,6 +33,7 @@ public:
 
     void sendDeliveryReceipt(const QString& local_id);
 
+    // 功能：返回当前连接最近一次收到且通过校验的在线用户快照。
     QStringList onlineUsers() const;
 
 signals:
@@ -148,8 +149,10 @@ private:
     // 功能：解析聊天确认正文，并通知界面更新 local_id 对应消息状态。
     void handleChatAckBody(const QByteArray& body);
 
+    // 功能：解析最终送达回执，并通知界面更新已有消息的 Delivered 状态。
     void handleDeliveryReceiptBody(const QByteArray& body);
 
+    // 功能：严格校验在线用户快照，更新缓存后通知已创建的界面。
     void handleOnlineUsersBody(const QByteArray& body);
 
     // 功能：清除已失效的在线快照，并通知已创建的界面同步清空。
@@ -171,5 +174,6 @@ private:
     // 功能：保存当前连接和认证阶段，供事件处理函数决定错误通知类型。
     AuthState m_state{AuthState::idle};
 
+    // 功能：缓存最后一份有效在线用户快照，供晚创建的主窗口主动回填。
     QStringList m_online_users;
 };

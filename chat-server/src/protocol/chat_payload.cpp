@@ -111,7 +111,9 @@ chatPayloadResult parseChatPayload(const std::string_view body) {
             send_at_str};
 }
 
-
+// ==================== 模块：送达回执正文校验 ====================
+// 功能：解析 delivery_receipt 的 local_id，确保其可安全用于待送达索引查询。
+// 失败：JSON 非对象、字段缺失、类型错误、空白或超长时返回对应错误码。
 DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(const std::string_view body)
 {
     boost::system::error_code error;

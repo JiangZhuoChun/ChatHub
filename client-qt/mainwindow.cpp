@@ -107,6 +107,7 @@ void MainWindow::onConversationItemClicked(const QListWidgetItem *item)
     renderCurrentConversation();
 }
 
+// 功能：读取在线列表项保存的用户名，仅回填接收者输入框。
 void MainWindow::onOnlineUserItemClicked(const QListWidgetItem *item)
 {
     if (item == nullptr){return;}
@@ -179,6 +180,7 @@ void MainWindow::onChatSendFailed(const ChatMessage& update)
     statusBar()->showMessage(QStringLiteral("消息发送失败：") + update.failure_reason);
 }
 
+// 功能：将已存在的本地消息标记为最终送达，不创建新气泡或重排会话。
 void MainWindow::onChatMessageDelivered(const ChatMessage &update) {
     ChatMessage* message = findMessageByLocalId(update.local_id);
     if (message == nullptr) {
@@ -523,6 +525,7 @@ void MainWindow::moveConversationItemToTop(const QString &peer)
     }
 }
 
+// 功能：整体替换在线用户视图，过滤当前用户后重新创建列表项。
 void MainWindow::updateOnlineUsers(const QStringList &users)
 {
     m_onlineUsers = users;

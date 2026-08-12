@@ -47,6 +47,7 @@ void Session::send(const protocol::MessageType type, std::string body) {
                });
 }
 
+// 功能：将关闭请求投递到会话 strand，避免 Server 线程直接并发修改 Session 状态。
 void Session::requestClose() {
     const auto self = shared_from_this();
     asio::post(m_strand, [self] {
