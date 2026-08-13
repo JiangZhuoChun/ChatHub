@@ -41,7 +41,9 @@ namespace net {
 Server::Server(asio::io_context& io_context, const std::uint16_t port)
     : m_strand(asio::make_strand(io_context)),
       m_acceptor(io_context, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port)),
-      m_pending_socket(io_context) {
+      m_pending_socket(io_context)
+{
+    m_message_repository.open("chathub.db");
 }
 
 // 功能：输出当前监听地址并启动第一个异步接受操作。
@@ -225,7 +227,38 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
         sender_it->second->send(protocol::MessageType::error, error_body);
         return;
     }
-    //7. 确认消息 local_id 不存在，避免重复投递
+    //7. SQLite 插入并提交
+    std::string sender = sender_username_it->second;
+    std::string recipient = payload.to;
+    std::string content = payload.content;
+    std::string local_id = payload.local_id;
+    std::string send_at = payload.send_at;
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    repository::NewMessage msg{sender, recipient, content, send_at,local_id,  now_ms};
+    auto outcome =m_message_repository.storeOrGetExisting(msg);
+    switch (outcome.result) {
+        case repository::StoreResult::Stored:
+            break;
+        case repository::StoreResult::DuplicateSame: {
+            boost::json::object ack;
+            ack["message_id"] = outcome.message_id;
+            ack["status"] = "accepted";
+            sender_it->second->send(
+                protocol::MessageType::chat_ack, boost::json::serialize(ack));
+            return;
+        }
+        case repository::StoreResult::IdempotencyConflict:
+            sender_it->second->send(
+                protocol::MessageType::error, makeRouteErrorBody(payload.local_id, "idempotency_conflict", "消息部分冲突"));
+            return;
+        case repository::StoreResult::DatabaseError:
+            sender_it->second->send(
+                protocol::MessageType::error, makeRouteErrorBody(payload.local_id, "database_error", "数据库错误"));
+            return;
+    }
+    //8. 确认消息 local_id 不存在，避免重复投递
     if (!rememberPendingDelivery(payload.to, payload.local_id,
         sender_username_it->second, sender_id))
     {
@@ -236,6 +269,7 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
     }
 
     boost::json::object forwarded;
+    forwarded["message_id"] = outcome.message_id;
     forwarded["local_id"] = payload.local_id;
     forwarded["from"] = sender_username_it->second;
     forwarded["to"] = payload.to;
@@ -247,6 +281,7 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
     boost::json::object ack;
     ack["local_id"] = payload.local_id;
     ack["status"] = "accepted";
+    ack["message_id"] = outcome.message_id;
     sender_it->second->send(protocol::MessageType::chat_ack, boost::json::serialize(ack));
 }
 

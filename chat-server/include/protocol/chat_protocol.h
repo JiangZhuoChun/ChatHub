@@ -15,7 +15,9 @@ enum class MessageType : std::uint8_t {
     auth = 5,
     chat_ack = 6,
     delivery_receipt = 7,
-    online_users = 8
+    online_users = 8,
+    history_query = 9,
+    history_result = 10
 };
 
 // 功能：标识 ChatHub 协议帧，接收端据此拒绝非本协议字节流。
@@ -24,13 +26,14 @@ inline constexpr std::uint16_t kFrameMagic = 0x4348;
 inline constexpr std::uint8_t kProtocolVersion = 1;
 // 功能：定义固定帧头的字节数，用于定位正文长度字段和正文起始位置。
 inline constexpr std::size_t kFrameHeaderLength = 8;
-// 功能：限制单帧正文最大字节数，防止异常数据无限占用内存。
-inline constexpr std::size_t kMaxFrameBodyLength = 1024;
-
+// 单帧 body 总上限（容纳 content + JSON 字段开销）。
+inline constexpr std::size_t kMaxFrameBodyLength = 2048;
+// 纯文本 content 上限（客户端发送的正文 ≤ 此值）
+inline constexpr std::size_t kMaxChatContentBytes = 1024;
 // 功能：判断帧头中的原始 type 值是否属于当前协议支持的类型范围。
 constexpr bool isKnownMessageType(const std::uint8_t raw_type) {
     return raw_type >= static_cast<std::uint8_t>(MessageType::chat) &&
-           raw_type <= static_cast<std::uint8_t>(MessageType::online_users);
+           raw_type <= static_cast<std::uint8_t>(MessageType::history_result);
 }
 
 } // protocol 命名空间结束

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "net/session.h"
+#include "repository/message_repository.h"
 
 #include <string>
 #include <unordered_map>
@@ -103,6 +104,8 @@ private:
 
     // 功能：保存尚未被接收者确认的消息，生命周期仅限当前服务进程。
     PendingDeliveryMap m_pendingDeliveries;
+
+    repository::MessageRepository m_message_repository;
 };
 
 } // net 命名空间结束

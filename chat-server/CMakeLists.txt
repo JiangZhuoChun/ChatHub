@@ -6,12 +6,15 @@ set(CHAT_SERVER_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+find_package(SQLite3 REQUIRED)
+
 add_executable(chat-server
     app/main.cpp
     src/net/server.cpp
     src/net/session.cpp
     src/protocol/frame_decoder.cpp
     src/protocol/chat_payload.cpp
+    src/repository/message_repository.cpp
 )
 target_include_directories(chat-server PRIVATE
         ${CHAT_SERVER_INCLUDES}
@@ -24,6 +27,7 @@ target_link_libraries(chat-server PRIVATE
         ws2_32
         mswsock
         crypto
+        SQLite::SQLite3
 )
 target_compile_definitions(chat-server PRIVATE
         ASIO_STANDALONE # 告诉 asio "不用 Boost"

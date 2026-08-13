@@ -106,7 +106,7 @@ private:
     protocol::FrameDecoder m_decoder;
 
     // 功能：保存每次异步读取到的原始字节。
-    std::array<char, 1024> m_read_buffer{};
+    std::array<char, protocol::kMaxFrameBodyLength> m_read_buffer{};
 
     // ==================== 模块：待发送帧队列 ====================
     // 功能：按顺序保存等待异步写出的完整协议帧。
