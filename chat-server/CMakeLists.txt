@@ -1,13 +1,38 @@
 cmake_minimum_required(VERSION 3.21)
 
-# 所有目标共用的头文件搜索路径
-set(CHAT_SERVER_INCLUDES
+find_package(SQLite3 REQUIRED)
+
+# 服务端可执行程序、示例和测试共享的编译配置。
+set(CHAT_SERVER_INCLUDE_DIRS
     ${ASIO_INCLUDE_DIR}
+    ${BOOST_INCLUDE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-find_package(SQLite3 REQUIRED)
+set(CHAT_SERVER_NETWORK_LIBRARIES
+    ws2_32
+    mswsock
+)
 
+set(CHAT_SERVER_COMPILE_DEFINITIONS
+    ASIO_STANDALONE
+    _WIN32_WINNT=0x0A00
+)
+
+function(configure_chat_server_target target_name)
+    target_include_directories(${target_name} PRIVATE
+        ${CHAT_SERVER_INCLUDE_DIRS}
+    )
+    target_compile_definitions(${target_name} PRIVATE
+        ${CHAT_SERVER_COMPILE_DEFINITIONS}
+    )
+endfunction()
+
+function(register_chat_server_test target_name)
+    add_test(NAME ${target_name} COMMAND $<TARGET_FILE:${target_name}>)
+endfunction()
+
+# ==================== ChatServer ====================
 add_executable(chat-server
     app/main.cpp
     src/net/server.cpp
@@ -16,56 +41,52 @@ add_executable(chat-server
     src/protocol/chat_payload.cpp
     src/repository/message_repository.cpp
 )
+configure_chat_server_target(chat-server)
 target_include_directories(chat-server PRIVATE
-        ${CHAT_SERVER_INCLUDES}
-        ${JWT_INCLUDE_DIR}
-        ${SQLITE3_INCLUDE_DIR}   # OpenSSL 头文件（opt/include 下）
-        ${BOOST_INCLUDE_DIR}     # boost::json 头文件（W8 私聊路由解析）
-)
-target_link_directories(chat-server PRIVATE ${SQLITE3_LIB_DIR})
-target_link_libraries(chat-server PRIVATE
-        ws2_32
-        mswsock
-        crypto
-        SQLite::SQLite3
-)
-target_compile_definitions(chat-server PRIVATE
-        ASIO_STANDALONE # 告诉 asio "不用 Boost"
-        _WIN32_WINNT=0x0A00 # 告诉 Windows 头文件 "支持 Win10 API"
-)
-
-add_executable(frame_decoder_test
-        examples/frame_decoder_test.cpp
-        src/protocol/frame_decoder.cpp
-        src/protocol/chat_payload.cpp
-)
-add_executable(jwt_demo
-        examples/jwt_demo.cpp
-)
-
-target_include_directories(frame_decoder_test PRIVATE
-        ${CHAT_SERVER_INCLUDES}
-        ${BOOST_INCLUDE_DIR}
-)
-target_link_libraries(frame_decoder_test PRIVATE ws2_32 mswsock)
-target_compile_definitions(frame_decoder_test PRIVATE
-        ASIO_STANDALONE
-        _WIN32_WINNT=0x0A00
-)
-
-add_test(NAME frame_decoder_test COMMAND frame_decoder_test)
-
-# jwt_demo：验证 JWT 库可用（W7）
-target_include_directories(jwt_demo PRIVATE
-    ${CHAT_SERVER_INCLUDES}
     ${JWT_INCLUDE_DIR}
-    ${SQLITE3_INCLUDE_DIR}   # OpenSSL 头文件（opt/include 下）
-    ${BOOST_INCLUDE_DIR}
 )
-target_link_directories(jwt_demo PRIVATE ${SQLITE3_LIB_DIR})
-target_link_libraries(jwt_demo PRIVATE crypto)
-target_compile_definitions(jwt_demo PRIVATE
-    ASIO_STANDALONE
-    _WIN32_WINNT=0x0A00
+target_link_directories(chat-server PRIVATE
+    ${SQLITE3_LIB_DIR}
 )
-add_test(NAME jwt_demo COMMAND jwt_demo)
+target_link_libraries(chat-server PRIVATE
+    ${CHAT_SERVER_NETWORK_LIBRARIES}
+    crypto
+    SQLite3::SQLite3
+)
+
+# ==================== CTest ====================
+add_executable(frame_decoder_test
+    examples/frame_decoder_test.cpp
+    src/protocol/frame_decoder.cpp
+    src/protocol/chat_payload.cpp
+)
+configure_chat_server_target(frame_decoder_test)
+target_link_libraries(frame_decoder_test PRIVATE
+    ${CHAT_SERVER_NETWORK_LIBRARIES}
+)
+register_chat_server_test(frame_decoder_test)
+
+add_executable(message_repository_test
+    examples/message_repository_test.cpp
+    src/repository/message_repository.cpp
+)
+configure_chat_server_target(message_repository_test)
+target_link_libraries(message_repository_test PRIVATE
+    SQLite3::SQLite3
+)
+register_chat_server_test(message_repository_test)
+
+add_executable(jwt_demo
+    examples/jwt_demo.cpp
+)
+configure_chat_server_target(jwt_demo)
+target_include_directories(jwt_demo PRIVATE
+    ${JWT_INCLUDE_DIR}
+)
+target_link_directories(jwt_demo PRIVATE
+    ${SQLITE3_LIB_DIR}
+)
+target_link_libraries(jwt_demo PRIVATE
+    crypto
+)
+register_chat_server_test(jwt_demo)

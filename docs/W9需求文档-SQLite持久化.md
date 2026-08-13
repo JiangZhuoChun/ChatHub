@@ -237,6 +237,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_order
 | 时间篡改 | 客户端提交未来/过去 `send_at` 不改变历史的服务端排序。 |
 | 历史权限 | 未认证或篡改历史查询字段不能读取记录；服务端只返回当前认证用户参与的消息。 |
 | 数据库失败 | SQLite 打开/写入/读取失败有明确日志与错误码；相关请求失败但 Server 不退出、其他连接保持可用。 |
+
+当前自动化覆盖：`message_repository_test` 将临时目录作为数据库路径，验证 `MessageRepository::open()` 返回失败并完成临时目录清理；Server 在数据库不可用时的路由错误和持续监听属于后续集成验收。
 | 容量 | 1024B `content` 加 JSON 封装后可发送；超过内容或帧上限的输入被拒绝。 |
 
 ## 九、最终验收标准
