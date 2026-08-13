@@ -55,25 +55,25 @@ chatPayloadResult parseChatPayload(std::string_view body);
 
 
 // ==================== 模块：送达回执正文校验结果 ====================
-// 功能：枚举 delivery_receipt 正文中 local_id 的校验失败原因。
+// 功能：枚举 delivery_receipt 正文中 message_id 的校验失败原因。
 enum class DeliveryReceiptPayloadError {
     none,
     invalid_json,
-    missing_local_id,
-    local_id_not_string,
-    blank_local_id,
-    local_id_too_long
+    missing_message_id,
+    message_id_not_string,
+    blank_message_id,
+    message_id_too_long
  };
 
-// 功能：保存送达回执解析后的错误码或可安全查询的 local_id。
+// 功能：保存送达回执解析后的错误码或可安全查询的 message_id。
 struct DeliveryReceiptPayloadResult {
-    // 功能：表示正文校验结果；只有 none 时 local_id 可用于查询待送达记录。
+    // 功能：表示正文校验结果；只有 none 时 message_id 可用于查询待送达记录。
     DeliveryReceiptPayloadError error{DeliveryReceiptPayloadError::none};
-    // 功能：保存已校验、非空且长度合规的客户端本地消息标识。
-    std::string local_id;
+    // 功能：保存已校验、非空且长度合规的服务端消息标识。
+    std::string message_id;
 };
 
-// 功能：解析并校验 delivery_receipt JSON 正文中的 local_id。
+// 功能：解析并校验 delivery_receipt JSON 正文中的 message_id。
 // 失败：JSON、字段类型、空白或长度不合法时返回对应错误码。
 DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(std::string_view body);
 } // protocol 命名空间结束

@@ -11,6 +11,7 @@ namespace {
 // ==================== 模块：正文校验限制与工具 ====================
 constexpr std::size_t kMaxChatContentBytes = 1024;
 constexpr std::size_t kMaxLocalIdLength = 64;
+constexpr std::size_t kMaxMessageIdLength = 64;
 constexpr std::size_t kMaxSendAtLength = 64;
 
 // 功能：判断文本是否全部由空格、制表符、换行等空白字符组成。
@@ -112,7 +113,7 @@ chatPayloadResult parseChatPayload(const std::string_view body) {
 }
 
 // ==================== 模块：送达回执正文校验 ====================
-// 功能：解析 delivery_receipt 的 local_id，确保其可安全用于待送达索引查询。
+// 功能：解析 delivery_receipt 的 message_id，确保其可安全用于待送达索引查询。
 // 失败：JSON 非对象、字段缺失、类型错误、空白或超长时返回对应错误码。
 DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(const std::string_view body)
 {
@@ -123,22 +124,22 @@ DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(const std::string_view 
     if (error || !value.is_object()) {
         return {DeliveryReceiptPayloadError::invalid_json, {}};
     }
-    const auto* local_id = value.as_object().if_contains("local_id");
-    if (!local_id) {
-        return {DeliveryReceiptPayloadError::missing_local_id, {}};
+    const auto* message_id = value.as_object().if_contains("message_id");
+    if (!message_id) {
+        return {DeliveryReceiptPayloadError::missing_message_id, {}};
     }
-    if (!local_id->is_string()) {
-        return {DeliveryReceiptPayloadError::local_id_not_string, {}};
+    if (!message_id->is_string()) {
+        return {DeliveryReceiptPayloadError::message_id_not_string, {}};
     }
-    const auto& json_local_id = local_id->as_string();
-    const std::string local_id_str(json_local_id.data(), json_local_id.size());
-    if (isBlank(local_id_str)) {
-        return {DeliveryReceiptPayloadError::blank_local_id, {}};
+    const auto& json_message_id = message_id->as_string();
+    const std::string message_id_str(json_message_id.data(), json_message_id.size());
+    if (isBlank(message_id_str)) {
+        return {DeliveryReceiptPayloadError::blank_message_id, {}};
     }
-    if (local_id_str.size() > kMaxLocalIdLength) {
-        return {DeliveryReceiptPayloadError::local_id_too_long, {}};
+    if (message_id_str.size() > kMaxMessageIdLength) {
+        return {DeliveryReceiptPayloadError::message_id_too_long, {}};
     }
-    return {DeliveryReceiptPayloadError::none, local_id_str};
+    return {DeliveryReceiptPayloadError::none, message_id_str};
 }
 
 } // protocol 命名空间结束

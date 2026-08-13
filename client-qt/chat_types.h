@@ -15,7 +15,9 @@ enum class ChatMessageStatus {
 
 // 功能：表示一条完整聊天记录，不包含任何 Qt 控件。
 struct ChatMessage {
-    // 功能：关联客户端本地消息、确认、失败重试和送达回执的唯一标识。
+    // 功能：保存服务端首次持久化后分配的全局消息身份；用于接收方回执与历史去重。
+    QString message_id;
+    // 功能：关联客户端本地消息、确认、失败和重试的稳定标识；不用于接收方回执。
     QString local_id;
     // 功能：保存消息发送者的认证用户名。
     QString from;

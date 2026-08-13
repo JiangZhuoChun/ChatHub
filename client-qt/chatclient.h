@@ -31,7 +31,8 @@ public:
     // 失败：未认证、参数为空或帧写入失败时，通过 chatSendFailed() 通知调用方。
     void sendChatMessage(ChatMessage message);
 
-    void sendDeliveryReceipt(const QString& local_id);
+    // 功能：为接收完成本地处理的消息发送回执；回执按服务端 message_id 关联。
+    void sendDeliveryReceipt(const QString& message_id);
 
     // 功能：返回当前连接最近一次收到且通过校验的在线用户快照。
     QStringList onlineUsers() const;
@@ -103,9 +104,11 @@ private:
 
     // 功能：将接收到的 JSON 聊天消息转换为 ChatMessage 对象。
     static ChatMessage makeReceivedChatMessage(const QJsonObject &object);
-    // 功能：将本地消息状态更新转换为 ChatMessage 对象。
+    // 功能：将按 local_id 定位的本地状态更新转换为 ChatMessage；accepted 时额外携带服务器分配的 message_id。
     static ChatMessage makeMessageStateUpdate(const QString& local_id,
-        const ChatMessageStatus status,const QString& failure_reason = {});
+        ChatMessageStatus status,
+        const QString& failure_reason = {},
+        const QString& message_id = {});
 
 
     // ==================== 模块：协议帧编码与发送 ====================

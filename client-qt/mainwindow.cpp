@@ -156,6 +156,7 @@ void MainWindow::onChatMessageAccepted(const ChatMessage& update) {
         return;
     }
 
+    message->message_id = update.message_id;
     message->status = update.status;
     message->failure_reason = update.failure_reason;
 
@@ -210,7 +211,7 @@ void MainWindow::onChatMessageReceived(const ChatMessage& message)
         m_unreadCounts[message.from]++;
     }
     refreshConversationItem(message.from);
-    m_chat->sendDeliveryReceipt(message.local_id);
+    m_chat->sendDeliveryReceipt(message.message_id);
 }
 
 // ==================== 模块：窗口初始化与连接状态辅助 ====================

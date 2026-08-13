@@ -244,6 +244,7 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
         case repository::StoreResult::DuplicateSame: {
             boost::json::object ack;
             ack["message_id"] = outcome.message_id;
+            ack["local_id"] = payload.local_id;
             ack["status"] = "accepted";
             sender_it->second->send(
                 protocol::MessageType::chat_ack, boost::json::serialize(ack));
@@ -258,12 +259,12 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
                 protocol::MessageType::error, makeRouteErrorBody(payload.local_id, "database_error", "数据库错误"));
             return;
     }
-    //8. 确认消息 local_id 不存在，避免重复投递
-    if (!rememberPendingDelivery(payload.to, payload.local_id,
-        sender_username_it->second, sender_id))
+    // 8. 以本次持久化生成的 message_id 登记待送达记录，避免回执关联到其他消息。
+    if (!rememberPendingDelivery(outcome.message_id,sender_username_it->second,
+        sender_id,payload.local_id,payload.to))
     {
         const std::string error_body =
-            makeRouteErrorBody(payload.local_id, "duplicate_local_id", "消息 local_id 已存在，不能重复发送");
+            makeRouteErrorBody(payload.local_id, "pending_delivery_register_failed","消息已保存，但送达状态登记失败");
             sender_it->second->send(protocol::MessageType::error,error_body);
         return;
     }
@@ -285,8 +286,8 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
     sender_it->second->send(protocol::MessageType::chat_ack, boost::json::serialize(ack));
 }
 
-// 功能：处理送达回执，目前仅检查格式，不处理具体业务。
-void Server::handleDeliveryReceipt(SessionId receipt_sender_id, const protocol::Message &message)
+// 功能：校验接收者回执的 message_id 与认证身份，并将最终送达状态通知原发送者。
+void Server::handleDeliveryReceipt(const SessionId receipt_sender_id, const protocol::Message &message)
 {
     //B 的会话，用于给 B 返回错误
     const auto sender_it = m_sessions.find(receipt_sender_id);
@@ -315,54 +316,46 @@ void Server::handleDeliveryReceipt(SessionId receipt_sender_id, const protocol::
         return;
     }
 
-    //B 的待送达消息表，用于检查 local_id
-    const auto recipient_it = m_pendingDeliveries.find(username_it->second);
-    if (recipient_it == m_pendingDeliveries.end())
-    {
-        const std::string error_body = makeDeliveryReceiptErrorBody("unknown_delivery_receipt", "没有对应的待送达消息");
-        sender_it->second->send(protocol::MessageType::error,error_body);
-        return;
-    }
-    //pending[B][local_id] 的记录,delivery_it->second     = { A 的用户名, A 的会话 ID }
-    const auto delivery_it = recipient_it->second.find(payload_result.local_id);
-    if (delivery_it == recipient_it->second.end()) {
+
+    const auto delivery_it = m_pendingDeliveries.find(payload_result.message_id);
+    if (delivery_it == m_pendingDeliveries.end() ||
+        delivery_it->second.recipient_username != username_it->second) {
         const std::string error_body = makeDeliveryReceiptErrorBody("unknown_delivery_receipt", "没有对应的待送达消息");
         sender_it->second->send(protocol::MessageType::error, error_body);
         return;
     }
     //A 的会话，用于通知“已送达”
     const auto original_sender_it = m_sessions.find(delivery_it->second.sender_session_id);
-    if (original_sender_it == m_sessions.end()) {
+    if (original_sender_it == m_sessions.end() ||
+        !isCurrentAuthenticatedSession(delivery_it->second.sender_session_id,
+                                       delivery_it->second.sender_username)) {
+        m_pendingDeliveries.erase(delivery_it);
         return;
     }
 
     boost::json::object delivered;
-    delivered["local_id"] = payload_result.local_id;
+    delivered["local_id"] = delivery_it->second.sender_local_id;
     delivered["status"] = "delivered";
     original_sender_it->second->send(protocol::MessageType::delivery_receipt,boost::json::serialize(delivered));
 
-    // 从 B 的内层表删除 delivery_it 指向的那条记录。
-    // 若 B 的内层表已空，再从 m_pendingDeliveries 删除 recipient_it。
-    recipient_it->second.erase(delivery_it);
-    if (recipient_it->second.empty()) {
-        m_pendingDeliveries.erase(recipient_it);
-    }
+    // 已处理的 message_id 不再接受第二次回执，重复回执会在 find() 时被拒绝。
+    m_pendingDeliveries.erase(delivery_it);
 }
 
 // 功能：记录待投递消息，避免重复投递。
-bool Server::rememberPendingDelivery(const std::string &recipient_username, const std::string &local_id,
-    const std::string &sender_username, SessionId sender_session_id)
+bool Server::rememberPendingDelivery(const std::string& message_id,const std::string &sender_username,
+    SessionId sender_session_id, const std::string& sender_local_id, const std::string& recipient_username)
 {
-    if (recipient_username.empty() || local_id.empty() || sender_username.empty() || sender_session_id == 0)
+    if (message_id.empty() || sender_username.empty() || sender_session_id == 0 ||
+        sender_local_id.empty() || recipient_username.empty())
     {
         return false;
     }
-        auto& deliveries_for_recipient = m_pendingDeliveries[recipient_username];
-        const auto [it,inserted] =
-            deliveries_for_recipient.emplace(local_id,PendingDelivery{sender_username,sender_session_id});
+        const auto [it,inserted] = m_pendingDeliveries.emplace(message_id,
+            PendingDelivery{sender_username,sender_session_id,sender_local_id,recipient_username});
 
-    //inserted == true：登记成功。
-    //inserted == false：同一个 B 已有相同 local_id，后续必须拒绝，不能覆盖。
+    // inserted == true：该 message_id 首次登记成功。
+    // inserted == false：理论上只可能是极小概率的 message_id 冲突，不能覆盖原记录。
     return inserted;
 }
 
@@ -370,26 +363,17 @@ bool Server::rememberPendingDelivery(const std::string &recipient_username, cons
 void Server::removePendingDeliveriesForSession(SessionId disconnected_session_id,
     const std::string &disconnected_username)
 {
-    for (auto recipient_it = m_pendingDeliveries.begin(); recipient_it != m_pendingDeliveries.end();)
-    {
-        auto& deliveries = recipient_it->second;
-        for (auto it = deliveries.begin(); it != deliveries.end();)
-        {
-           const bool recipient_disconnected =
-               !disconnected_username.empty() && recipient_it->first == disconnected_username;
-            const bool sender_disconnected =
-                it->second.sender_session_id == disconnected_session_id;
+    for (auto it = m_pendingDeliveries.begin(); it != m_pendingDeliveries.end();) {
+        const bool recipient_disconnected =
+            !disconnected_username.empty() &&
+            it->second.recipient_username == disconnected_username;
+        const bool sender_disconnected =
+            it->second.sender_session_id == disconnected_session_id;
 
-            if (recipient_disconnected || sender_disconnected) {
-                it = deliveries.erase(it);
-            }else {
-                ++it;
-            }
-        }
-        if (deliveries.empty()) {
-            recipient_it = m_pendingDeliveries.erase(recipient_it);
-        }else {
-            ++recipient_it;
+        if (recipient_disconnected || sender_disconnected) {
+            it = m_pendingDeliveries.erase(it);
+        } else {
+            ++it;
         }
     }
 }

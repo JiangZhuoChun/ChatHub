@@ -89,15 +89,14 @@ void ChatClient::sendChatMessage(ChatMessage message) {
             (message.local_id, ChatMessageStatus::Failed, error));
         return;
     }
-
     emit chatMessageQueued(message);
 }
 
 // 功能：在接收消息已写入本地模型并完成界面处理后，向服务端发送最终送达回执。
-void ChatClient::sendDeliveryReceipt(const QString& local_id) {
-    const QString normalized_local_id = local_id.trimmed();
-    if (normalized_local_id.isEmpty()) {
-        emit serverError(QStringLiteral("送达回执缺少 local_id"));
+void ChatClient::sendDeliveryReceipt(const QString& message_id) {
+    const QString normalized_message_id = message_id.trimmed();
+    if (normalized_message_id.isEmpty()) {
+        emit serverError(QStringLiteral("送达回执缺少 message_id"));
         return;
     }
     if (m_state != AuthState::authenticated) {
@@ -106,7 +105,7 @@ void ChatClient::sendDeliveryReceipt(const QString& local_id) {
     }
 
     QJsonObject object;
-    object["local_id"] = normalized_local_id;
+    object["message_id"] = normalized_message_id;
     const auto body = QJsonDocument(object).toJson(QJsonDocument::Compact);
 
     QString error;
@@ -193,6 +192,7 @@ void ChatClient::connectSlots() {
 ChatMessage ChatClient::makeReceivedChatMessage(const QJsonObject &object)
 {
     ChatMessage message;
+    message.message_id = object.value("message_id").toString();
     message.local_id = object.value("local_id").toString();
     message.from = object.value("from").toString();
     message.to = object.value("to").toString();
@@ -204,9 +204,10 @@ ChatMessage ChatClient::makeReceivedChatMessage(const QJsonObject &object)
 }
 
 ChatMessage ChatClient::makeMessageStateUpdate(const QString &local_id, const ChatMessageStatus status,
-    const QString &failure_reason)
+    const QString &failure_reason,const QString& message_id)
 {
     ChatMessage update;
+    update.message_id = message_id;
     update.local_id = local_id;
     update.status = status;
     update.failure_reason = failure_reason;
@@ -387,13 +388,23 @@ void ChatClient::handleChatBody(const QByteArray& body) {
 
     const QJsonObject object = document.object();
 
-    if (object.value("local_id").toString().isEmpty() || object.value("from").toString().isEmpty() ||
-        object.value("to").toString().isEmpty() || object.value("content").toString().isEmpty()) {
+    const QJsonValue message_id_value = object.value("message_id");
+    const QJsonValue local_id_value = object.value("local_id");
+    const QJsonValue from_value = object.value("from");
+    const QJsonValue to_value = object.value("to");
+    const QJsonValue content_value = object.value("content");
+    const QJsonValue send_at_value = object.value("send_at");
+    if (!message_id_value.isString() || message_id_value.toString().isEmpty() ||
+        !local_id_value.isString() || local_id_value.toString().isEmpty() ||
+        !from_value.isString() || from_value.toString().isEmpty() ||
+        !to_value.isString() || to_value.toString().isEmpty() ||
+        !content_value.isString() || content_value.toString().isEmpty() ||
+        !send_at_value.isString()) {
         emit serverError(QStringLiteral("聊天信息缺少必要字段"));
         return;
     }
 
-    const QDateTime send_at = QDateTime::fromString(object.value("send_at").toString(), Qt::ISODate);
+    const QDateTime send_at = QDateTime::fromString(send_at_value.toString(), Qt::ISODate);
     if (!send_at.isValid()) {
         emit serverError(QStringLiteral("聊天信息时间字段错误"));
         return;
@@ -451,13 +462,21 @@ void ChatClient::handleChatAckBody(const QByteArray& body) {
     }
 
     const QJsonObject object = document.object();
-    const QString local_id = object.value("local_id").toString();
-    const QString status = object.value("status").toString();
-    if (local_id.isEmpty() || status != QStringLiteral("accepted")) {
+    const QJsonValue message_id_value = object.value("message_id");
+    const QJsonValue local_id_value = object.value("local_id");
+    const QJsonValue status_value = object.value("status");
+    if (!message_id_value.isString() || !local_id_value.isString() || !status_value.isString()) {
         emit serverError(QStringLiteral("聊天确认消息字段错误"));
         return;
     }
-    emit chatMessageAccepted(makeMessageStateUpdate(local_id, ChatMessageStatus::Accepted));
+    const QString message_id = message_id_value.toString();
+    const QString local_id = local_id_value.toString();
+    const QString status = status_value.toString();
+    if (message_id.isEmpty() || local_id.isEmpty() || status != QStringLiteral("accepted")) {
+        emit serverError(QStringLiteral("聊天确认消息字段错误"));
+        return;
+    }
+    emit chatMessageAccepted(makeMessageStateUpdate(local_id, ChatMessageStatus::Accepted,{},message_id));
 }
 
 // 功能：校验服务端返回的最终送达状态，并通知界面更新对应已有消息。

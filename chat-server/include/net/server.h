@@ -28,13 +28,14 @@ private:
         std::string sender_username;
         // 功能：定位原发送者当前会话，用于投递最终送达状态。
         SessionId sender_session_id;
+        // 功能：保存 A 侧的本地消息标识，使最终状态通知仍能定位 A 的既有气泡。
+        std::string sender_local_id;
+        // 功能：保存应发送回执的接收者身份，防止其他已认证用户伪造回执。
+        std::string recipient_username;
     };
 
-  // 接收者用户名
-  // └─ local_id
-  //      └─ { 原发送者用户名, 原发送者会话 ID }
-    using PendingDeliveryMap = std::unordered_map
-        <std::string,std::unordered_map<std::string,PendingDelivery>>;
+    // 功能：以服务端生成且全局唯一的 message_id 索引每一条待送达记录。
+    using PendingDeliveryMap = std::unordered_map<std::string,PendingDelivery>;
 
     // 功能：接受一个连接、创建 Session、登记在线表，并继续等待下一次连接。
     void doAccept();
@@ -56,11 +57,9 @@ private:
     // 功能：校验接收者的送达回执，并将最终送达状态转发给原发送者。
     void handleDeliveryReceipt(SessionId receipt_sender_id,const protocol::Message& message);
 
-    // 功能：功能：记录待投递消息，避免重复投递。
-    bool rememberPendingDelivery(const std::string& recipient_username,
-                                    const std::string& local_id,
-                                    const std::string& sender_username,
-                                    SessionId sender_session_id);
+    // 功能：以 message_id 登记待送达消息，供接收者回执后反查发送方会话和 A 侧 local_id。
+    bool rememberPendingDelivery( const std::string& message_id,const std::string& sender_username,
+        SessionId sender_session_id, const std::string& sender_local_id, const std::string& recipient_username);
 
     // 功能：删除断开会话作为发送者或真正离线接收者时遗留的待送达记录。
     void removePendingDeliveriesForSession(SessionId disconnected_session_id,const std::string& disconnected_username);

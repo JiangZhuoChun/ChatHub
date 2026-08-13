@@ -45,8 +45,8 @@ W9 交付的是单机、单 ChatServer 下的“已接受消息历史”。它�
 
 | 字段 | 谁生成 | 生命周期与用途 |
 |---|---|---|
-| `local_id` | 发送端 Qt 客户端 | 一次发送请求的稳定重试 ID；用于现有 ack、失败气泡和送达回执关联；同一用户重试必须保持不变。 |
-| `message_id` | ChatServer 在首次 SQLite 成功提交时生成 | 持久业务身份；用于历史记录去重、稳定排序的平手决胜和后续扩展；不得使用 `SessionId` 代替。 |
+| `local_id` | 发送端 Qt 客户端 | 一次发送请求的稳定重试 ID；用于现有 ack、失败气泡和重试；同一用户重试必须保持不变。 |
+| `message_id` | ChatServer 在首次 SQLite 成功提交时生成 | 持久业务身份；用于 B 的送达回执、历史记录去重、稳定排序的平手决胜和后续扩展；不得使用 `SessionId` 代替。 |
 
 一条消息只存一行，不为发送者和接收者各复制一行。数据库约束 `UNIQUE(sender, client_local_id)`：同一用户用同一个 `local_id` 重发同一请求时，只能得到既有记录；若 `recipient`、`content` 或 `client_send_at` 与既有记录不同，返回 `idempotency_conflict`，不得静默覆盖。
 
@@ -64,7 +64,7 @@ W9 交付的是单机、单 ChatServer 下的“已接受消息历史”。它�
 校验帧与认证身份
   → 校验接收者当前在线
   → SQLite 插入并提交
-  → 记录 PendingDelivery
+  → 以 message_id 记录 PendingDelivery
   → 向 B 排队转发 chat
   → 向 A 发送 chat_ack（含 message_id）
 ```
@@ -73,6 +73,7 @@ W9 交付的是单机、单 ChatServer 下的“已接受消息历史”。它�
 - 完全相同的重复请求：不新增行、不重复转发给 B；向 A 重发既有 `chat_ack`，其中携带已有 `message_id`；
 - 接收者离线时保持 W8 的 `recipient_offline` 行为，不入库；
 - SQLite 已提交但 B 随后断开的竞态不回滚已提交记录，也不得伪造 `Delivered`；
+- `PendingDeliveryMap` 以 `message_id` 为键，值保存 A 的 `sender_local_id`、发送者会话、发送者身份和应回执的 B；B 的回执只携带 `message_id`，服务器验证 B 身份后才用保存的 `sender_local_id` 通知 A。
 - 服务重启后 `PendingDeliveryMap` 仍是空的，历史中本人发送的消息只能恢复为 `Accepted`，不能恢复为 `Delivered`。
 
 ### 5. 历史首屏策略
