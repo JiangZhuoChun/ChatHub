@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <optional>
 #include <sqlite3.h>
 
 namespace repository{
@@ -30,7 +31,19 @@ namespace repository{
         std::string recipient;
         std::string content;
         std::string client_send_at;
+        std::string client_local_id;
         std::int64_t server_received_at_ms;
+    };
+    //历史记录游标结构
+    struct HistoryCursor {
+        std::int64_t server_received_at_ms;
+        std::string message_id;
+    };
+    //历史记录查询结果结构（loadRecentForUser 返回的完整结构）
+    struct HistoryQueryResult {
+        std::vector<StoredMessage> messages;//本页消息
+        bool has_more {false};//是否存在更早一页
+        std::optional<HistoryCursor> next_cursor;//下一页游标（如果 has_more == true）
     };
     //封装一次发送请求的完整参数
     struct NewMessage {
@@ -44,7 +57,11 @@ namespace repository{
 
     class MessageRepository {
     public:
+        MessageRepository() = default;
         ~MessageRepository();
+
+        MessageRepository(const MessageRepository&) = delete;
+        MessageRepository& operator=(const MessageRepository&) = delete;
 
         //打开/迁移数据库；返回 true 表示可用
         bool open(const std::string& db_path);
@@ -53,9 +70,8 @@ namespace repository{
         StoreOutcome storeOrGetExisting(const NewMessage& message);
 
         // 加载某用户参与的最近消息（按 server_received_at_ms 排序）
-        // 返回是否成功 + 记录列表
-        bool loadRecentForUser(
-            const std::string& username,std::vector<StoredMessage>& out_messages,int limit);
+        // 返回完整查询结果
+        bool loadRecentForUser(const std::string& username,const std::optional<HistoryCursor>& before,int limit,HistoryQueryResult& out_result);
 
     private:
         bool exec(const char* sql);

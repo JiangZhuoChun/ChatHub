@@ -1,36 +1,61 @@
-#include <protocol/chat_payload.h>
+#include "protocol/chat_payload.h"
 
 #include <boost/json/src.hpp>
 #include <boost/system/error_code.hpp>
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 
 namespace {
 
-// ==================== 模块：正文校验限制与工具 ====================
 constexpr std::size_t kMaxChatContentBytes = 1024;
 constexpr std::size_t kMaxLocalIdLength = 64;
-constexpr std::size_t kMaxMessageIdLength = 64;
+constexpr std::size_t kMaxDeliveryReceiptMessageIdLength = 64;
 constexpr std::size_t kMaxSendAtLength = 64;
+constexpr std::size_t kMaxHistoryRequestIdLength = 64;
+constexpr std::size_t kMaxHistoryCursorMessageIdLength = 64;
+constexpr std::int64_t kMinHistoryLimit = 1;
+constexpr std::int64_t kMaxHistoryLimit = 50;
 
-// 功能：判断文本是否全部由空格、制表符、换行等空白字符组成。
-bool isBlank(const std::string_view text) {
-    return std::all_of(text.begin(), text.end(),
-                       // 功能：判断单个字符是否为空白字符。
-                       [](const unsigned char character) {
+bool isBlank(const std::string_view text)
+{
+    return std::all_of(text.begin(), text.end(), [](const unsigned char character) {
         return std::isspace(character);
     });
 }
 
-} // 匿名命名空间结束
+bool tryNormalizeHistoryLimit(const boost::json::value& value, int& out_limit)
+{
+    if (value.is_int64()) {
+        const auto requested = value.as_int64();
+        out_limit = static_cast<int>(std::clamp(
+            requested, kMinHistoryLimit, kMaxHistoryLimit));
+        return true;
+    }
+
+    if (value.is_uint64()) {
+        const auto requested = value.as_uint64();
+        if (requested < static_cast<std::uint64_t>(kMinHistoryLimit)) {
+            out_limit = static_cast<int>(kMinHistoryLimit);
+        } else if (requested > static_cast<std::uint64_t>(kMaxHistoryLimit)) {
+            out_limit = static_cast<int>(kMaxHistoryLimit);
+        } else {
+            out_limit = static_cast<int>(requested);
+        }
+        return true;
+    }
+
+    return false;
+}
+
+} // namespace
 
 namespace protocol {
 
-// ==================== 模块：聊天 JSON 正文校验 ====================
-// 功能：解析聊天 JSON 并逐项校验接收者、消息、消息标识和发送时间。
-// 失败：任一字段不符合协议要求时返回对应错误，不向调用方提供可路由的聊天正文。
-chatPayloadResult parseChatPayload(const std::string_view body) {
+// ==================== 聊天 JSON 正文校验 ====================
+ChatPayloadResult parseChatPayload(const std::string_view body)
+{
     boost::system::error_code error;
     const auto value = boost::json::parse(
         boost::json::string_view(body.data(), body.size()), error);
@@ -112,9 +137,7 @@ chatPayloadResult parseChatPayload(const std::string_view body) {
             send_at_str};
 }
 
-// ==================== 模块：送达回执正文校验 ====================
-// 功能：解析 delivery_receipt 的 message_id，确保其可安全用于待送达索引查询。
-// 失败：JSON 非对象、字段缺失、类型错误、空白或超长时返回对应错误码。
+// ==================== 送达回执 JSON 正文校验 ====================
 DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(const std::string_view body)
 {
     boost::system::error_code error;
@@ -124,6 +147,7 @@ DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(const std::string_view 
     if (error || !value.is_object()) {
         return {DeliveryReceiptPayloadError::invalid_json, {}};
     }
+
     const auto* message_id = value.as_object().if_contains("message_id");
     if (!message_id) {
         return {DeliveryReceiptPayloadError::missing_message_id, {}};
@@ -136,10 +160,107 @@ DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(const std::string_view 
     if (isBlank(message_id_str)) {
         return {DeliveryReceiptPayloadError::blank_message_id, {}};
     }
-    if (message_id_str.size() > kMaxMessageIdLength) {
+    if (message_id_str.size() > kMaxDeliveryReceiptMessageIdLength) {
         return {DeliveryReceiptPayloadError::message_id_too_long, {}};
     }
+
     return {DeliveryReceiptPayloadError::none, message_id_str};
 }
 
-} // protocol 命名空间结束
+// ==================== 历史查询 JSON 正文校验 ====================
+HistoryQueryPayloadResult parseHistoryQueryPayload(const std::string_view body)
+{
+    boost::system::error_code error;
+    const auto value = boost::json::parse(
+        boost::json::string_view(body.data(), body.size()), error);
+
+    if (error || !value.is_object()) {
+        return {HistoryQueryPayloadError::invalid_json};
+    }
+
+    const auto& object = value.as_object();
+    if (object.if_contains("sender") || object.if_contains("recipient") ||
+        object.if_contains("username")) {
+        return {HistoryQueryPayloadError::forbidden_identity_field};
+    }
+
+    const auto* request_id = object.if_contains("request_id");
+    if (!request_id) {
+        return {HistoryQueryPayloadError::missing_request_id};
+    }
+    if (!request_id->is_string()) {
+        return {HistoryQueryPayloadError::request_id_not_string};
+    }
+    const auto& json_request_id = request_id->as_string();
+    const std::string request_id_str(json_request_id.data(), json_request_id.size());
+    if (isBlank(request_id_str)) {
+        return {HistoryQueryPayloadError::blank_request_id};
+    }
+    if (request_id_str.size() > kMaxHistoryRequestIdLength) {
+        return {HistoryQueryPayloadError::request_id_too_long};
+    }
+
+    const auto* limit = object.if_contains("limit");
+    if (!limit) {
+        return {HistoryQueryPayloadError::missing_limit};
+    }
+    int effective_limit = 0;
+    if (!tryNormalizeHistoryLimit(*limit, effective_limit)) {
+        return {HistoryQueryPayloadError::limit_not_integer};
+    }
+
+    std::optional<HistoryQueryCursor> before_cursor = std::nullopt;
+    const auto* before_value = object.if_contains("before");
+    if (before_value) {
+        if (!before_value->is_object()) {
+            return {HistoryQueryPayloadError::before_not_object};
+        }
+
+        const auto& before_object = before_value->as_object();
+        const auto* timestamp = before_object.if_contains("server_received_at_ms");
+        if (!timestamp) {
+            return {HistoryQueryPayloadError::missing_before_timestamp};
+        }
+
+        std::int64_t before_timestamp{};
+        if (timestamp->is_int64()) {
+            if (timestamp->as_int64() < 0) {
+                return {HistoryQueryPayloadError::negative_before_timestamp};
+            }
+            before_timestamp = timestamp->as_int64();
+        } else if (timestamp->is_uint64()) {
+            if (timestamp->as_uint64() >
+                (std::numeric_limits<std::int64_t>::max)()) {
+                return {HistoryQueryPayloadError::before_timestamp_not_integer};
+            }
+            before_timestamp = static_cast<std::int64_t>(timestamp->as_uint64());
+        } else {
+            return {HistoryQueryPayloadError::before_timestamp_not_integer};
+        }
+
+        const auto* message_id = before_object.if_contains("message_id");
+        if (!message_id) {
+            return {HistoryQueryPayloadError::missing_before_message_id};
+        }
+        if (!message_id->is_string()) {
+            return {HistoryQueryPayloadError::before_message_id_not_string};
+        }
+        const auto& json_message_id = message_id->as_string();
+        const std::string message_id_str(json_message_id.data(), json_message_id.size());
+        if (isBlank(message_id_str)) {
+            return {HistoryQueryPayloadError::blank_before_message_id};
+        }
+        if (message_id_str.size() > kMaxHistoryCursorMessageIdLength) {
+            return {HistoryQueryPayloadError::before_message_id_too_long};
+        }
+
+        before_cursor = HistoryQueryCursor{before_timestamp, message_id_str};
+    }
+
+    return {HistoryQueryPayloadError::none,
+            request_id_str,
+            effective_limit,
+            before_cursor};
+}
+
+} // namespace protocol

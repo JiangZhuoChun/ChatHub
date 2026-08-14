@@ -223,6 +223,16 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_order
    - 重启、幂等、容量、数据库失败、历史分块和 UI 回归；
    - 记录“客户端时间不可信、持久 ID 与重试 ID 分离、历史与实时并发合并”三个取舍。
 
+### 实现与验证记录
+
+#### 2026-08-14｜W9-3 / B1：`history_query` 协议解析（进行中）
+
+- 已在 `chat_payload.*` 定义历史查询解析结果、错误码和协议层游标，并实现 `request_id`、整数 `limit` 钳制、可选复合 `before` 游标及伪造身份字段的校验。
+- 本步修复了首屏缺少 `before` 时的空指针解引用、合法游标时间戳的无条件错误返回，以及未构造 `std::optional` 即解引用的问题。
+- 已统一 `chat_payload` 校验模块的类型命名和布局：`chatPayloadResult` 更名为 `ChatPayloadResult`，可能失败的 limit 规范化辅助函数更名为 `tryNormalizeHistoryLimit`；未改变 JSON 字段、错误码或校验语义。
+- 验证：`cmake --build cmake-build-debug --parallel 2` 成功；`ctest --test-dir cmake-build-debug --output-on-failure` 为 2/2 通过。
+- 剩余缺口：现有 CTest 尚未调用 `parseHistoryQueryPayload()`；B1 必须补齐合法首屏、钳制、非法类型、非法游标与伪造身份字段的专用测试后才能验收完成。
+
 ---
 
 ## 八、验收矩阵

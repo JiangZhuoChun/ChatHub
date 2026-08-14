@@ -3,6 +3,7 @@
 #include <sqlite3.h>
 #include <iostream>
 #include <string>
+#include <algorithm>
 namespace repository{
     MessageRepository::~MessageRepository() {
         close();
@@ -210,9 +211,139 @@ namespace repository{
     }
 
     // 加载用户最近消息
-    bool MessageRepository::loadRecentForUser(const std::string &username, std::vector<StoredMessage> &out_messages,int limit)
+    // 功能：加载用户最近消息，可选地指定复合游标，在该时间戳之前的消息全部加载出来。
+    bool MessageRepository::loadRecentForUser(const std::string& username,const std::optional<HistoryCursor>& before,int limit,HistoryQueryResult& out_result)
     {
+        out_result = {};
+        if (m_db == nullptr || username.empty()) {
+            return false;
+        }
+        // 第一页 SQL
+        const auto* sql_first_page = R"(
+            SELECT
+                message_id, sender, recipient, client_local_id, content, client_send_at, server_received_at_ms
+            FROM messages
+            WHERE sender = ? or recipient = ?
+            ORDER BY server_received_at_ms DESC, message_id DESC
+            LIMIT ? ;
+        )";
+        //为 before 设计第二份 SQL，并根据 before 选择 SQL
+        const auto* sql_with_before = R"(
+                SELECT
+                    message_id,sender,recipient,client_local_id,content,client_send_at,server_received_at_ms
+                FROM messages
+                WHERE (sender = ? OR recipient = ?)
+                  AND ( server_received_at_ms < ?
+                      OR (server_received_at_ms = ?AND message_id < ?)
+                       )
+                ORDER BY server_received_at_ms DESC, message_id DESC
+                LIMIT ?;
+        )";
+        const auto* sql = before.has_value() ? sql_with_before : sql_first_page;
+        const int bounded_limit = std::clamp(limit,1,50);
+        sqlite3_stmt* stmt = nullptr;
 
+        int rc = sqlite3_prepare_v2(m_db,sql,-1,&stmt,nullptr);
+        if (rc != SQLITE_OK) {
+            log("Failed to prepare initial message query:");
+            return false;
+        }
+        // 公共部分:绑定用户名
+        rc = sqlite3_bind_text(stmt,1,username.c_str(),-1,SQLITE_TRANSIENT);
+        if (rc != SQLITE_OK) {
+            log("Failed to bind sender username:");
+            sqlite3_finalize(stmt);
+            return false;
+        }
+        rc = sqlite3_bind_text(stmt,2,username.c_str(),-1,SQLITE_TRANSIENT);
+        if (rc != SQLITE_OK) {
+            log("Failed to bind recipient username:");
+            sqlite3_finalize(stmt);
+            return false;
+        }
+
+        //带 before
+        if (before.has_value()) {
+            rc = sqlite3_bind_int64(stmt,3,before->server_received_at_ms);
+            if (rc != SQLITE_OK) {
+                log("Failed to bind before timestamp:");
+                sqlite3_finalize(stmt);
+                return false;
+            }
+            rc = sqlite3_bind_int64(stmt,4,before->server_received_at_ms);
+            if (rc != SQLITE_OK) {
+                log("Failed to bind before timestamp:");
+                sqlite3_finalize(stmt);
+                return false;
+            }
+            rc = sqlite3_bind_text(stmt,5,before->message_id.c_str(),-1,SQLITE_TRANSIENT);
+            if (rc != SQLITE_OK) {
+                log("Failed to bind before message ID:");
+                sqlite3_finalize(stmt);
+                return false;
+            }
+            rc = sqlite3_bind_int(stmt,6,bounded_limit +1);
+            if (rc != SQLITE_OK) {
+                log("Failed to bind limit:");
+                sqlite3_finalize(stmt);
+                return false;
+            }
+        }
+        //首屏
+        else {
+            rc = sqlite3_bind_int(stmt,3,bounded_limit +1);
+            if (rc != SQLITE_OK) {
+                log("Failed to bind limit:");
+                sqlite3_finalize(stmt);
+                return false;
+            }
+        }
+
+        while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+            StoredMessage message;
+            //sqlite3_column_text() 返回的不是 std::string，而是 SQLite 内部管理的一块内存
+            //这个指针的有效期和当前 stmt、当前结果行有关
+            const auto* message_id_text = sqlite3_column_text(stmt,0);
+            const auto* sender_text = sqlite3_column_text(stmt,1);
+            const auto* recipient_text = sqlite3_column_text(stmt,2);
+            const unsigned char* client_local_id_text =sqlite3_column_text(stmt, 3);
+            const unsigned char* content_text =sqlite3_column_text(stmt, 4);
+            const unsigned char* client_send_at_text =sqlite3_column_text(stmt, 5);
+
+            //文字列都立即复制为 std::string，没有保存 SQLite 临时指针
+            message.message_id = message_id_text ? reinterpret_cast<const char*> (message_id_text) : "";
+            message.sender = sender_text ? reinterpret_cast<const char*> (sender_text) : "";
+            message.recipient =recipient_text ? reinterpret_cast<const char*>(recipient_text) : "";
+            message.client_local_id =client_local_id_text ? reinterpret_cast<const char*>(client_local_id_text) : "";
+            message.content =content_text ? reinterpret_cast<const char*>(content_text) : "";
+            message.client_send_at =client_send_at_text ? reinterpret_cast<const char*>(client_send_at_text) : "";
+            message.server_received_at_ms = sqlite3_column_int64(stmt,6);
+
+            out_result.messages.push_back(message);
+        }
+        if (rc != SQLITE_DONE) {
+            log("Failed to step message query");
+            sqlite3_finalize(stmt);
+            return false;
+        }
+        //把“多取一条”的数据库结果转成正确的历史页
+        out_result.has_more = (out_result.messages.size() > static_cast<std::size_t>(bounded_limit));
+        //如果 has_more，删除最后那条额外记录
+        if (out_result.has_more)
+        {out_result.messages.pop_back();}
+
+        //无条件反转messages，让客户端最终得到旧到新顺序
+        std::reverse(out_result.messages.begin(), out_result.messages.end());
+
+        //如果 has_more，从 messages.front() 生成 next_cursor
+        if (out_result.has_more) {
+            const auto message_id = out_result.messages.front().message_id;
+            const auto server_received_at_ms = out_result.messages.front().server_received_at_ms;
+            out_result.next_cursor = HistoryCursor{ server_received_at_ms,message_id};
+        }
+
+        sqlite3_finalize(stmt);
+        return true;
     }
 
     bool MessageRepository::exec(const char *sql){
