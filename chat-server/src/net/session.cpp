@@ -174,8 +174,10 @@ std::string Session::makeChatError(const std::string& local_id, const std::strin
 // 功能：在未认证时只处理认证帧；认证完成后分派聊天、心跳和错误帧。
 // 失败：令牌无效、未认证发送业务帧或聊天正文校验失败时关闭会话或返回错误帧。
 void Session::handlerMessage(const protocol::Message& message) {
-    if (!m_authenticated) {
-        if (message.type == protocol::MessageType::auth) {
+    if (!m_authenticated)
+    {
+        if (message.type == protocol::MessageType::auth)
+        {
             std::string username;
             if (verifyJwt(message.body, username)) {
                 m_authenticated = true;
@@ -188,8 +190,16 @@ void Session::handlerMessage(const protocol::Message& message) {
                 log("认证失败，关闭连接");
                 closeOnStrand();
             }
-        } else {
-            log("未认证先发消息，关闭连接");
+        }
+
+        else if (message.type == protocol::MessageType::history_query)
+        {
+            send(protocol::MessageType::error,
+                makeHistoryError("authentication_required","历史查询需要先完成认证"));
+        }
+        else {
+            send(protocol::MessageType::error,
+                makeChatError("", "authentication_required", "未认证"));
             closeOnStrand();
         }
         return;
@@ -277,7 +287,6 @@ void Session::handlerMessage(const protocol::Message& message) {
                  makeChatError(result.local_id, error_code, error_message));
             break;
         }
-
         m_on_message(m_id, message);
         break;
     }
@@ -298,7 +307,102 @@ void Session::handlerMessage(const protocol::Message& message) {
     case protocol::MessageType::delivery_receipt:
         m_on_message(m_id, message);
         break;
+    case protocol::MessageType::online_users:
+        break;
+        case protocol::MessageType::history_query: {
+            const auto result = protocol::parseHistoryQueryPayload(message.body);
+
+            if (result.error != protocol::HistoryQueryPayloadError::none)
+            {
+                std::string error_code = "history_validation_failed";
+                std::string error_message = "历史查询消息校验失败";
+
+                switch (result.error) {
+                    case protocol::HistoryQueryPayloadError::none:
+                        break;
+                    case protocol::HistoryQueryPayloadError::invalid_json:
+                        error_code = "invalid_json";
+                        error_message = "历史查询 JSON 格式错误";
+                        break;
+                    case protocol::HistoryQueryPayloadError::forbidden_identity_field:
+                        error_code = "forbidden_identity_field";
+                        error_message = "历史查询消息包含禁止的 identity 字段";
+                        break;
+                    case protocol::HistoryQueryPayloadError::missing_request_id:
+                        error_code = "missing_request_id";
+                        error_message = "历史查询消息缺少 request_id";
+                        break;
+                    case protocol::HistoryQueryPayloadError::request_id_not_string:
+                        error_code = "request_id_not_string";
+                        error_message = "历史查询消息的 request_id 必须是字符串";
+                        break;
+                    case protocol::HistoryQueryPayloadError::blank_request_id:
+                        error_code = "blank_request_id";
+                        error_message = "历史查询消息的 request_id 不能为空";
+                        break;
+                    case protocol::HistoryQueryPayloadError::request_id_too_long:
+                        error_code = "request_id_too_long";
+                        error_message = "历史查询消息的 request_id 不能超过 64 字节";
+                        break;
+                    case protocol::HistoryQueryPayloadError::missing_limit:
+                        error_code = "missing_limit";
+                        error_message = "历史查询消息缺少 limit";
+                        break;
+                    case protocol::HistoryQueryPayloadError::limit_not_integer:
+                        error_code = "limit_not_integer";
+                        error_message = "历史查询消息的 limit 必须是整数";
+                        break;
+                    case protocol::HistoryQueryPayloadError::before_not_object:
+                        error_code = "before_not_object";
+                        error_message = "历史查询消息的 before 必须是对象";
+                        break;
+                    case protocol::HistoryQueryPayloadError::missing_before_timestamp:
+                        error_code = "missing_before_timestamp";
+                        error_message = "历史查询消息缺少 before.timestamp";
+                        break;
+                    case protocol::HistoryQueryPayloadError::before_timestamp_not_integer:
+                        error_code = "before_timestamp_not_integer";
+                        error_message = "历史查询消息的 before.timestamp 必须是整数";
+                        break;
+                    case protocol::HistoryQueryPayloadError::negative_before_timestamp:
+                        error_code = "negative_before_timestamp";
+                        error_message = "历史查询消息的 before.timestamp 不能为负数";
+                        break;
+                    case protocol::HistoryQueryPayloadError::missing_before_message_id:
+                        error_code = "missing_before_message_id";
+                        error_message = "历史查询消息缺少 before.message_id";
+                        break;
+                    case protocol::HistoryQueryPayloadError::before_message_id_not_string:
+                        error_code = "before_message_id_not_string";
+                        error_message = "历史查询消息的 before.message_id 必须是字符串";
+                        break;
+                    case protocol::HistoryQueryPayloadError::blank_before_message_id:
+                        error_code = "blank_before_message_id";
+                        error_message = "历史查询消息的 before.message_id 不能为空";
+                        break;
+                    case protocol::HistoryQueryPayloadError::before_message_id_too_long:
+                        error_code = "before_message_id_too_long";
+                        error_message = "历史查询消息的 before.message_id 不能超过 64 字节";
+                        break;
+                }
+                send(protocol::MessageType::error,makeHistoryError(error_code,error_message));
+                break;
+            }
+            // 到这里说明请求体已经通过协议校验。
+            m_on_message(m_id,message);
+            break;
+        }
+    default: ;
     }
+}
+
+std::string Session::makeHistoryError(const std::string &code, const std::string &message) {
+    boost::json::object object;
+    object["scope"] = "history";
+    object["code"] = code;
+    object["message"] = message;
+
+    return boost::json::serialize(object);
 }
 
 

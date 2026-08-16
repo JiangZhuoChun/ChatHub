@@ -23,6 +23,7 @@ std::string makeRouteErrorBody(const std::string& local_id, const std::string& c
     }
     return boost::json::serialize(object);
 }
+
 // 功能：构造包含 code 和 message 的送达回执错误 JSON，用于客户端请求送达回执失败时返回。
 std::string makeDeliveryReceiptErrorBody(const std::string &code, const std::string &message)
 {
@@ -32,6 +33,54 @@ std::string makeDeliveryReceiptErrorBody(const std::string &code, const std::str
     object["message"] = std::string(message);
     return boost::json::serialize(object);
 }
+
+//生成 history 错误
+std::string makeHistoryError(const std::string &code, const std::string &message)
+{
+    boost::json::object object;
+    object["scope"] = "history";
+    object["code"] = code;
+    object["message"] = message;
+
+    return boost::json::serialize(object);
+}
+
+//“数据层记录 → 网络协议 JSON 记录”的转换器
+boost::json::object makeHistoryMessageObject(const repository::StoredMessage& message) {
+    boost::json::object object;
+    object["message_id"] = message.message_id;
+    object["local_id"] = message.client_local_id;
+    object["from"] = message.sender;
+    object["to"] = message.recipient;
+    object["content"] = message.content;
+    object["send_at"] = message.client_send_at;
+    object["server_received_at_ms"] = message.server_received_at_ms;
+    return object;
+}
+
+//把 query_result.messages 切成实际 JSON body 不超过 2048 字节的 history_result 块
+std::string makeHistoryResultBody(const std::string& request_id,const boost::json::array& messages,
+                                     const bool is_last_chunk,const repository::HistoryQueryResult& query_result) {
+    boost::json::object object;
+    object["request_id"] = request_id;
+    object["messages"] = messages;
+    object["is_last_chunk"] = is_last_chunk;
+
+    if (is_last_chunk) {
+        object["has_more"] = query_result.has_more;
+
+        if (query_result.has_more && query_result.next_cursor.has_value()) {
+            boost::json::object cursor;
+            cursor["server_received_at_ms"] = query_result.next_cursor->server_received_at_ms;
+            cursor["message_id"] = query_result.next_cursor->message_id;
+            object["next_cursor"] = std::move(cursor);
+        }else {
+            object["next_cursor"] = nullptr;
+        }
+    }
+    return boost::json::serialize(object);
+}
+
 } // 匿名命名空间结束
 
 namespace net {
@@ -43,7 +92,10 @@ Server::Server(asio::io_context& io_context, const std::uint16_t port)
       m_acceptor(io_context, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port)),
       m_pending_socket(io_context)
 {
-    m_message_repository.open("chathub.db");
+    m_database_available = m_message_repository.open("chathub.db");
+    if (!m_database_available) {
+        std::cerr << "SQLite 初始化失败：聊天持久化暂不可用" << std::endl;
+    }
 }
 
 // 功能：输出当前监听地址并启动第一个异步接受操作。
@@ -178,6 +230,9 @@ void Server::onSessionMessage(const SessionId sender_id, const protocol::Message
         case protocol::MessageType::delivery_receipt:
             handleDeliveryReceipt(sender_id,message);
             break;
+        case protocol::MessageType::history_query:
+            handleHistoryQuery(sender_id,message);
+            break;
         default:
             break;
     }
@@ -227,7 +282,14 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
         sender_it->second->send(protocol::MessageType::error, error_body);
         return;
     }
-    //7. SQLite 插入并提交
+    //7. 确认数据库可用
+    if (!m_database_available) {
+        const std::string error_body = makeRouteErrorBody(
+            payload.local_id, "database_unavailable", "数据库当前不可用，消息未发送");
+        sender_it->second->send(protocol::MessageType::error, error_body);
+        return;
+    }
+    //8. SQLite 插入并提交
     std::string sender = sender_username_it->second;
     std::string recipient = payload.to;
     std::string content = payload.content;
@@ -259,7 +321,7 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
                 protocol::MessageType::error, makeRouteErrorBody(payload.local_id, "database_error", "数据库错误"));
             return;
     }
-    // 8. 以本次持久化生成的 message_id 登记待送达记录，避免回执关联到其他消息。
+    // 9. 以本次持久化生成的 message_id 登记待送达记录，避免回执关联到其他消息。
     if (!rememberPendingDelivery(outcome.message_id,sender_username_it->second,
         sender_id,payload.local_id,payload.to))
     {
@@ -289,7 +351,6 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
 // 功能：校验接收者回执的 message_id 与认证身份，并将最终送达状态通知原发送者。
 void Server::handleDeliveryReceipt(const SessionId receipt_sender_id, const protocol::Message &message)
 {
-    //B 的会话，用于给 B 返回错误
     const auto sender_it = m_sessions.find(receipt_sender_id);
     if (sender_it == m_sessions.end()) {
         return;
@@ -377,6 +438,115 @@ void Server::removePendingDeliveriesForSession(SessionId disconnected_session_id
         }
     }
 }
+
+void Server::handleHistoryQuery(SessionId sender_id, const protocol::Message &message) {
+    const auto payload_result = protocol::parseHistoryQueryPayload(message.body);
+    const auto session_it = m_sessions.find(sender_id);
+
+    if (session_it == m_sessions.end()) {
+        return;
+    }
+    if (payload_result.error != protocol::HistoryQueryPayloadError::none) {
+        session_it->second->send(protocol::MessageType::error,
+            makeHistoryError("history_validation_failed", "历史查询校验失败"));
+        return;
+    }
+
+
+    const auto username_it = m_session_to_username.find(sender_id);
+    if (username_it == m_session_to_username.end()){
+        session_it->second->send(protocol::MessageType::error,
+            makeHistoryError("sender_not_registered", "会话尚未登记认证身份"));
+        return;
+    }
+
+    if (!isCurrentAuthenticatedSession(sender_id,username_it->second)) {
+        session_it->second->send(protocol::MessageType::error,
+             makeHistoryError("session_replaced", "当前登录已在其他连接接管"));
+        return;
+    }
+    // 接着做 protocol 游标 → repository 游标的转换。
+    std::optional<repository::HistoryCursor> before;
+    if (payload_result.before.has_value()) {
+        before = repository::HistoryCursor{
+            payload_result.before->server_received_at_ms,
+            payload_result.before->message_id
+        };
+    }
+    repository::HistoryQueryResult query_result;
+    if (!m_database_available ||
+        !m_message_repository.loadRecentForUser(username_it->second,before,payload_result.limit,query_result))
+    {
+        session_it->second->send(protocol::MessageType::error,
+            makeHistoryError("database_read_failed", "历史消息读取失败"));
+        return;
+    }
+
+    //1. 先准备两个容器
+    std::vector<boost::json::array> chunks;//已经确定不会超长的完整块
+    boost::json::array current_chunk;//当前还在尝试塞消息的块
+
+    //2. 每条 StoredMessage 先转成 JSON 对象
+    for (const auto& stored_message : query_result.messages) {
+        const auto message_object = makeHistoryMessageObject(stored_message);
+
+        // 3. 不直接修改当前块，先复制出候选块
+        // 还不知道加入后会不会超过 2048。
+        // 先试算，失败时可以直接丢弃 candidate，原来的 current_chunk 保持不变
+        auto candidate = current_chunk;
+        candidate.emplace_back(message_object);
+
+        //4. 用完整“最后块格式”试算实际 body 大小
+        //最后块字段最多，包含 has_more 和 next_cursor。如果这个较大的版本也能装下，普通块肯定能装下
+        const auto candidate_body =
+            makeHistoryResultBody(payload_result.request_id,candidate,true,query_result);
+        if (candidate_body.size() <= protocol::kMaxFrameBodyLength) {
+            current_chunk = std::move(candidate);
+            continue;
+        }
+
+        //5. 处理放不下的情况
+        // current_chunk 本来为空：说明单条记录也超长，返回错误并停止
+        if (current_chunk.empty()) {
+            std::cerr << "单条历史记录超过响应帧大小限制" << std::endl;
+            session_it->second->send(protocol::MessageType::error,
+                makeHistoryError("history_message_too_large", "单条历史记录超过响应帧大小限制"));
+            return;
+        }
+        //若不为空，说明只是“m3 加到 m1、m2 后太大”，先把旧块保存
+        chunks.push_back(std::move(current_chunk));
+        //接着单独验证 m3
+        boost::json::array single_message_chunk;
+        single_message_chunk.emplace_back(message_object);
+
+        const auto single_message_body =
+            makeHistoryResultBody(payload_result.request_id,single_message_chunk,true,query_result);
+        if (single_message_body.size() > protocol::kMaxFrameBodyLength) {
+            std::cerr << "单条历史记录超过响应帧大小限制" << std::endl;
+            session_it->second->send(protocol::MessageType::error,
+                makeHistoryError("history_message_too_large","单条历史消息无法装入响应帧"));
+            return;
+        }
+        //不超长：让它成为新的当前块
+        current_chunk = std::move(single_message_chunk);
+    }
+    //6. 循环结束后收尾
+    if (current_chunk.empty() && chunks.empty()) {
+        chunks.emplace_back();// 空查询仍要回一个空 messages 的最终响应
+    }else if (!current_chunk.empty()) {
+        chunks.push_back(std::move(current_chunk));
+    }
+    //7. 所有块确定后，才发送
+    for (std::size_t index = 0;index < chunks.size();++index) {
+        const bool is_last_chunk = index + 1 == chunks.size();
+
+        const auto body =
+            makeHistoryResultBody(payload_result.request_id,chunks[index],is_last_chunk,query_result);
+
+        session_it->second->send(protocol::MessageType::history_result, body);
+    }
+}
+
 // 功能：构建在线用户列表帧的 body 部分。
 std::optional<std::string> Server::buildOnlineUsersBody() {
     std::vector<std::string> users;

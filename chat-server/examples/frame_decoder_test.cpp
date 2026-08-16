@@ -1,6 +1,8 @@
 #include "protocol/frame_decoder.h"
 #include "protocol/chat_payload.h"
+
 #include <iostream>
+#include <string>
 
 // ==================== 模块：帧解码场景测试 ====================
 // 功能：验证半包分两次到达时，解码器只在正文完整后回调一条聊天消息。
@@ -98,6 +100,102 @@ bool testDeliverReceiptPayload() {
            too_long_id.error == protocol::DeliveryReceiptPayloadError::message_id_too_long;
 }
 
+// 功能：验证合法历史查询、可选游标和页大小钳制后的结果。
+bool testHistoryQueryPayloadSuccess() {
+    // 第 1 步：首屏请求不携带 before，结果必须保留空游标。
+    const auto first_page = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history-first","limit":50})");
+
+    // 第 2 步：翻页请求必须保留完整的复合游标。
+    const auto older_page = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history-older","limit":2,"before":{"server_received_at_ms":1723456789000,"message_id":"message-42"}})");
+
+    // 第 3 步：整数 limit 超出范围时按协议钳制，而不是拒绝请求。
+    const auto lower_bound = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history-lower","limit":0})");
+    const auto upper_bound = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history-upper","limit":51})");
+
+    return first_page.error == protocol::HistoryQueryPayloadError::none &&
+           first_page.request_id == "history-first" &&
+           first_page.limit == 50 &&
+           !first_page.before.has_value() &&
+           older_page.error == protocol::HistoryQueryPayloadError::none &&
+           older_page.request_id == "history-older" &&
+           older_page.limit == 2 &&
+           older_page.before.has_value() &&
+           older_page.before->server_received_at_ms == 1723456789000 &&
+           older_page.before->message_id == "message-42" &&
+           lower_bound.error == protocol::HistoryQueryPayloadError::none &&
+           lower_bound.limit == 1 &&
+           upper_bound.error == protocol::HistoryQueryPayloadError::none &&
+           upper_bound.limit == 50;
+}
+
+// 功能：验证历史查询在字段缺失、类型错误、越界和身份伪造时拒绝请求。
+bool testHistoryQueryPayloadRejection() {
+    // 第 1 步：构造 request_id 与 cursor message_id 的超长输入。
+    const std::string too_long_request =
+        "{\"request_id\":\"" + std::string(65, 'x') + "\",\"limit\":1}";
+    const std::string too_long_cursor_id =
+        "{\"request_id\":\"history\",\"limit\":1,\"before\":{"
+        "\"server_received_at_ms\":1,\"message_id\":\"" +
+        std::string(65, 'x') + "\"}}";
+
+    // 第 2 步：分别触发每类协议错误。
+    const auto invalid_json = protocol::parseHistoryQueryPayload(
+        R"({"request_id":})");
+    const auto missing_request_id = protocol::parseHistoryQueryPayload(
+        R"({"limit":1})");
+    const auto numeric_request_id = protocol::parseHistoryQueryPayload(
+        R"({"request_id":1,"limit":1})");
+    const auto blank_request_id = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"   ","limit":1})");
+    const auto long_request_id = protocol::parseHistoryQueryPayload(too_long_request);
+    const auto missing_limit = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history"})");
+    const auto decimal_limit = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history","limit":1.5})");
+    const auto forged_sender = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history","limit":1,"sender":"alice"})");
+    const auto before_not_object = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history","limit":1,"before":[]})");
+    const auto missing_timestamp = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history","limit":1,"before":{}})");
+    const auto text_timestamp = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history","limit":1,"before":{"server_received_at_ms":"1","message_id":"m"}})");
+    const auto negative_timestamp = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history","limit":1,"before":{"server_received_at_ms":-1,"message_id":"m"}})");
+    const auto oversized_timestamp = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history","limit":1,"before":{"server_received_at_ms":9223372036854775808,"message_id":"m"}})");
+    const auto missing_message_id = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history","limit":1,"before":{"server_received_at_ms":1}})");
+    const auto numeric_message_id = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history","limit":1,"before":{"server_received_at_ms":1,"message_id":1}})");
+    const auto blank_message_id = protocol::parseHistoryQueryPayload(
+        R"({"request_id":"history","limit":1,"before":{"server_received_at_ms":1,"message_id":"   "}})");
+    const auto long_message_id = protocol::parseHistoryQueryPayload(too_long_cursor_id);
+
+    return invalid_json.error == protocol::HistoryQueryPayloadError::invalid_json &&
+           missing_request_id.error == protocol::HistoryQueryPayloadError::missing_request_id &&
+           numeric_request_id.error == protocol::HistoryQueryPayloadError::request_id_not_string &&
+           blank_request_id.error == protocol::HistoryQueryPayloadError::blank_request_id &&
+           long_request_id.error == protocol::HistoryQueryPayloadError::request_id_too_long &&
+           missing_limit.error == protocol::HistoryQueryPayloadError::missing_limit &&
+           decimal_limit.error == protocol::HistoryQueryPayloadError::limit_not_integer &&
+           forged_sender.error == protocol::HistoryQueryPayloadError::forbidden_identity_field &&
+           before_not_object.error == protocol::HistoryQueryPayloadError::before_not_object &&
+           missing_timestamp.error == protocol::HistoryQueryPayloadError::missing_before_timestamp &&
+           text_timestamp.error == protocol::HistoryQueryPayloadError::before_timestamp_not_integer &&
+           negative_timestamp.error == protocol::HistoryQueryPayloadError::negative_before_timestamp &&
+           oversized_timestamp.error == protocol::HistoryQueryPayloadError::before_timestamp_not_integer &&
+           missing_message_id.error == protocol::HistoryQueryPayloadError::missing_before_message_id &&
+           numeric_message_id.error == protocol::HistoryQueryPayloadError::before_message_id_not_string &&
+           blank_message_id.error == protocol::HistoryQueryPayloadError::blank_before_message_id &&
+           long_message_id.error == protocol::HistoryQueryPayloadError::before_message_id_too_long;
+
+}
+
 // ==================== 模块：测试结果汇总 ====================
 // 功能：输出单个测试用例的通过或失败结果，并返回其布尔状态。
 bool runTest(const char* name, const bool passed) {
@@ -126,6 +224,12 @@ bool testAll() {
         all_pass = false;
     }
     if (!runTest("delivery receipt payload", testDeliverReceiptPayload())) {
+        all_pass = false;
+    }
+    if (!runTest("history query payload success", testHistoryQueryPayloadSuccess())) {
+        all_pass = false;
+    }
+    if (!runTest("history query payload rejection", testHistoryQueryPayloadRejection())) {
         all_pass = false;
     }
     return all_pass;

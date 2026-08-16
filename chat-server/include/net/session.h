@@ -14,6 +14,7 @@
 
 namespace net {
 
+
 class Session;
 
 // ==================== 模块：会话基础类型与回调 ====================
@@ -83,6 +84,8 @@ private:
     // 功能：根据认证状态和消息类型处理认证、聊天、心跳及错误帧。
     void handlerMessage(const protocol::Message& message);
 
+    //
+    static std::string makeHistoryError(const std::string& code,const std::string& message);
 
     // ==================== 模块：关闭与日志 ====================
     // 功能：幂等地标记会话断开，并通知 Server 从在线表中移除当前会话。
@@ -101,6 +104,7 @@ private:
 
     // 功能：保证当前会话的读写、状态修改和队列操作串行执行。
     asio::strand<asio::any_io_executor> m_strand;
+
 
     // 功能：缓存半包和粘包并还原完整协议帧。
     protocol::FrameDecoder m_decoder;
@@ -132,6 +136,7 @@ private:
     // ==================== 模块：认证身份状态 ====================
     // 功能：记录当前 Socket 是否已通过令牌认证。
     bool m_authenticated{false};
+
 
     // 功能：保存认证成功后从令牌中提取的用户名。
     std::string m_username;

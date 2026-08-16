@@ -57,12 +57,15 @@ private:
     // 功能：校验接收者的送达回执，并将最终送达状态转发给原发送者。
     void handleDeliveryReceipt(SessionId receipt_sender_id,const protocol::Message& message);
 
+
     // 功能：以 message_id 登记待送达消息，供接收者回执后反查发送方会话和 A 侧 local_id。
     bool rememberPendingDelivery( const std::string& message_id,const std::string& sender_username,
         SessionId sender_session_id, const std::string& sender_local_id, const std::string& recipient_username);
 
     // 功能：删除断开会话作为发送者或真正离线接收者时遗留的待送达记录。
     void removePendingDeliveriesForSession(SessionId disconnected_session_id,const std::string& disconnected_username);
+
+    void handleHistoryQuery(SessionId sender_id,const protocol::Message& message);
 
     // 功能：从认证用户名映射生成稳定排序的 online_users JSON 正文。
     std::optional<std::string>  buildOnlineUsersBody();
@@ -104,6 +107,9 @@ private:
     // 功能：保存尚未被接收者确认的消息，生命周期仅限当前服务进程。
     PendingDeliveryMap m_pendingDeliveries;
 
+
+    // 功能：记录 SQLite 是否已完成打开和初始化；不可用时拒绝依赖持久化的聊天写入。
+    bool m_database_available{false};
     repository::MessageRepository m_message_repository;
 };
 

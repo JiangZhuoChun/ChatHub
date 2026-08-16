@@ -20,6 +20,7 @@ constexpr std::int64_t kMaxHistoryLimit = 50;
 
 bool isBlank(const std::string_view text)
 {
+    // 逐个字符检查，只有全为空白字符时才返回 true。
     return std::all_of(text.begin(), text.end(), [](const unsigned char character) {
         return std::isspace(character);
     });
@@ -27,6 +28,7 @@ bool isBlank(const std::string_view text)
 
 bool tryNormalizeHistoryLimit(const boost::json::value& value, int& out_limit)
 {
+    // 先处理有符号整数，允许负数并将其钳制为最小页大小。
     if (value.is_int64()) {
         const auto requested = value.as_int64();
         out_limit = static_cast<int>(std::clamp(
@@ -34,6 +36,7 @@ bool tryNormalizeHistoryLimit(const boost::json::value& value, int& out_limit)
         return true;
     }
 
+    // 再处理无符号整数，避免把其直接转换为有符号整数造成溢出。
     if (value.is_uint64()) {
         const auto requested = value.as_uint64();
         if (requested < static_cast<std::uint64_t>(kMinHistoryLimit)) {
@@ -46,6 +49,7 @@ bool tryNormalizeHistoryLimit(const boost::json::value& value, int& out_limit)
         return true;
     }
 
+    // 浮点数、字符串、布尔值和 null 都不是合法页大小。
     return false;
 }
 
@@ -56,6 +60,7 @@ namespace protocol {
 // ==================== 聊天 JSON 正文校验 ====================
 ChatPayloadResult parseChatPayload(const std::string_view body)
 {
+    // 第 1 步：将帧正文解析为 JSON 根值，并确认根节点是对象。
     boost::system::error_code error;
     const auto value = boost::json::parse(
         boost::json::string_view(body.data(), body.size()), error);
@@ -64,11 +69,13 @@ ChatPayloadResult parseChatPayload(const std::string_view body)
         return {ChatPayloadError::invalid_json, {}};
     }
 
+    // 第 2 步：拒绝客户端伪造的发送者身份字段。
     const auto& object = value.as_object();
     if (object.if_contains("sender_id")) {
         return {ChatPayloadError::forbidden_sender_id, {}};
     }
 
+    // 第 3 步：校验接收者字段。
     const auto* to = object.if_contains("to");
     if (!to) {
         return {ChatPayloadError::missing_recipient, {}};
@@ -82,6 +89,7 @@ ChatPayloadResult parseChatPayload(const std::string_view body)
         return {ChatPayloadError::blank_recipient, {}};
     }
 
+    // 第 4 步：校验客户端本地消息标识，用于 ack、失败提示和重试关联。
     const auto* local_id = object.if_contains("local_id");
     if (!local_id) {
         return {ChatPayloadError::missing_local_id, {}};
@@ -98,6 +106,7 @@ ChatPayloadResult parseChatPayload(const std::string_view body)
         return {ChatPayloadError::local_id_too_long, {}};
     }
 
+    // 第 5 步：校验客户端提交的发送时间文本。
     const auto* send_at = object.if_contains("send_at");
     if (!send_at) {
         return {ChatPayloadError::missing_send_at, {}, {}, local_id_str};
@@ -114,6 +123,7 @@ ChatPayloadResult parseChatPayload(const std::string_view body)
         return {ChatPayloadError::send_at_too_long, {}, {}, local_id_str};
     }
 
+    // 第 6 步：校验聊天正文。
     const auto* content = object.if_contains("content");
     if (!content) {
         return {ChatPayloadError::missing_content, {}};
@@ -130,6 +140,7 @@ ChatPayloadResult parseChatPayload(const std::string_view body)
         return {ChatPayloadError::content_too_long, {}};
     }
 
+    // 第 7 步：仅返回全部校验通过后的可路由字段。
     return {ChatPayloadError::none,
             to_str,
             content_str,
@@ -140,6 +151,7 @@ ChatPayloadResult parseChatPayload(const std::string_view body)
 // ==================== 送达回执 JSON 正文校验 ====================
 DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(const std::string_view body)
 {
+    // 第 1 步：解析 JSON，并要求根节点为对象。
     boost::system::error_code error;
     const auto value = boost::json::parse(
         boost::json::string_view(body.data(), body.size()), error);
@@ -148,6 +160,7 @@ DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(const std::string_view 
         return {DeliveryReceiptPayloadError::invalid_json, {}};
     }
 
+    // 第 2 步：校验回执关联的服务端消息标识。
     const auto* message_id = value.as_object().if_contains("message_id");
     if (!message_id) {
         return {DeliveryReceiptPayloadError::missing_message_id, {}};
@@ -164,12 +177,14 @@ DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(const std::string_view 
         return {DeliveryReceiptPayloadError::message_id_too_long, {}};
     }
 
+    // 第 3 步：返回已校验的消息标识，供待送达索引查询使用。
     return {DeliveryReceiptPayloadError::none, message_id_str};
 }
 
 // ==================== 历史查询 JSON 正文校验 ====================
 HistoryQueryPayloadResult parseHistoryQueryPayload(const std::string_view body)
 {
+    // 第 1 步：解析 JSON，并要求根节点为对象。
     boost::system::error_code error;
     const auto value = boost::json::parse(
         boost::json::string_view(body.data(), body.size()), error);
@@ -178,12 +193,14 @@ HistoryQueryPayloadResult parseHistoryQueryPayload(const std::string_view body)
         return {HistoryQueryPayloadError::invalid_json};
     }
 
+    // 第 2 步：拒绝请求正文指定用户身份，身份只能来自认证 Session。
     const auto& object = value.as_object();
     if (object.if_contains("sender") || object.if_contains("recipient") ||
         object.if_contains("username")) {
         return {HistoryQueryPayloadError::forbidden_identity_field};
     }
 
+    // 第 3 步：校验本次历史请求与响应分块的关联标识。
     const auto* request_id = object.if_contains("request_id");
     if (!request_id) {
         return {HistoryQueryPayloadError::missing_request_id};
@@ -200,6 +217,7 @@ HistoryQueryPayloadResult parseHistoryQueryPayload(const std::string_view body)
         return {HistoryQueryPayloadError::request_id_too_long};
     }
 
+    // 第 4 步：校验整数类型并将页大小钳制到协议范围 1..50。
     const auto* limit = object.if_contains("limit");
     if (!limit) {
         return {HistoryQueryPayloadError::missing_limit};
@@ -209,6 +227,7 @@ HistoryQueryPayloadResult parseHistoryQueryPayload(const std::string_view body)
         return {HistoryQueryPayloadError::limit_not_integer};
     }
 
+    // 第 5 步：校验可选游标；缺失 before 表示首屏请求。
     std::optional<HistoryQueryCursor> before_cursor = std::nullopt;
     const auto* before_value = object.if_contains("before");
     if (before_value) {
@@ -216,6 +235,7 @@ HistoryQueryPayloadResult parseHistoryQueryPayload(const std::string_view body)
             return {HistoryQueryPayloadError::before_not_object};
         }
 
+        // 第 5.1 步：校验游标时间戳，要求可安全表示为非负 int64。
         const auto& before_object = before_value->as_object();
         const auto* timestamp = before_object.if_contains("server_received_at_ms");
         if (!timestamp) {
@@ -238,6 +258,7 @@ HistoryQueryPayloadResult parseHistoryQueryPayload(const std::string_view body)
             return {HistoryQueryPayloadError::before_timestamp_not_integer};
         }
 
+        // 第 5.2 步：校验与时间戳共同构成稳定分页边界的 message_id。
         const auto* message_id = before_object.if_contains("message_id");
         if (!message_id) {
             return {HistoryQueryPayloadError::missing_before_message_id};
@@ -254,9 +275,11 @@ HistoryQueryPayloadResult parseHistoryQueryPayload(const std::string_view body)
             return {HistoryQueryPayloadError::before_message_id_too_long};
         }
 
+        // 第 5.3 步：两个字段都通过后，整体构造游标，避免出现半有效状态。
         before_cursor = HistoryQueryCursor{before_timestamp, message_id_str};
     }
 
+    // 第 6 步：返回完整且已校验的历史查询参数。
     return {HistoryQueryPayloadError::none,
             request_id_str,
             effective_limit,

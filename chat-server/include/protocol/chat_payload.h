@@ -7,7 +7,7 @@
 
 namespace protocol {
 
-// ==================== Chat JSON payload validation ====================
+// ==================== 聊天 JSON 正文校验 ====================
 enum class ChatPayloadError {
     none,
     invalid_json,
@@ -34,7 +34,7 @@ enum class ChatPayloadError {
     send_at_too_long,
 };
 
-// Successful results contain only fields validated for server routing.
+// 成功结果只保存已通过校验、可供服务端路由使用的字段。
 struct ChatPayloadResult {
     ChatPayloadError error{ChatPayloadError::none};
     std::string to;
@@ -45,7 +45,7 @@ struct ChatPayloadResult {
 
 ChatPayloadResult parseChatPayload(std::string_view body);
 
-// ================= Delivery receipt JSON payload validation =================
+// ==================== 送达回执 JSON 正文校验 ====================
 enum class DeliveryReceiptPayloadError {
     none,
     invalid_json,
@@ -62,7 +62,7 @@ struct DeliveryReceiptPayloadResult {
 
 DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(std::string_view body);
 
-// ================== History query JSON payload validation ==================
+// ==================== 历史查询 JSON 正文校验 ====================
 enum class HistoryQueryPayloadError {
     none,
     invalid_json,
@@ -86,7 +86,7 @@ enum class HistoryQueryPayloadError {
     before_message_id_too_long,
 };
 
-// A validated protocol cursor. It is mapped to the Repository cursor later.
+// 已校验的协议层游标；后续由 Server 映射为 Repository 游标。
 struct HistoryQueryCursor {
     std::int64_t server_received_at_ms;
     std::string message_id;

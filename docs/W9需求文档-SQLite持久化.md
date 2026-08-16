@@ -225,13 +225,34 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_order
 
 ### 实现与验证记录
 
-#### 2026-08-14｜W9-3 / B1：`history_query` 协议解析（进行中）
+#### 2026-08-14｜W9-3 / B1：`history_query` 协议解析（已完成）
 
 - 已在 `chat_payload.*` 定义历史查询解析结果、错误码和协议层游标，并实现 `request_id`、整数 `limit` 钳制、可选复合 `before` 游标及伪造身份字段的校验。
 - 本步修复了首屏缺少 `before` 时的空指针解引用、合法游标时间戳的无条件错误返回，以及未构造 `std::optional` 即解引用的问题。
 - 已统一 `chat_payload` 校验模块的类型命名和布局：`chatPayloadResult` 更名为 `ChatPayloadResult`，可能失败的 limit 规范化辅助函数更名为 `tryNormalizeHistoryLimit`；未改变 JSON 字段、错误码或校验语义。
+- `chat_payload` 模块的说明性代码注释统一使用中文；API、JSON 字段和代码标识符仍保留其既定英文名称。
+- 三类正文校验函数均按实际执行顺序补充中文步骤说明，明确每个字段校验和失败分支所防止的输入风险。
+- `frame_decoder_test` 已直接覆盖合法首屏、完整 `before`、limit 上下界钳制，以及 JSON、请求 ID、limit、伪造身份字段和游标字段的拒绝路径。
 - 验证：`cmake --build cmake-build-debug --parallel 2` 成功；`ctest --test-dir cmake-build-debug --output-on-failure` 为 2/2 通过。
-- 剩余缺口：现有 CTest 尚未调用 `parseHistoryQueryPayload()`；B1 必须补齐合法首屏、钳制、非法类型、非法游标与伪造身份字段的专用测试后才能验收完成。
+- 下一步：B2 在认证后的 Session 消息分派中识别 `history_query`，并沿用现有协议错误响应路径。
+
+#### 2026-08-16｜W9-3 / B2：Session 历史查询分派（已完成）
+
+- `Session` 对未认证 `history_query` 返回 `scope=history`、`code=authentication_required` 的协议错误；该路径不关闭当前 Session，也不调用 `m_on_message`，因此不会进入 Server 或数据库。
+- 已认证的 `history_query` 先调用唯一的 `parseHistoryQueryPayload()` 校验；校验失败返回 `scope=history` 的对应错误且不转交，校验成功才以原始协议帧调用一次 `m_on_message(m_id, message)`。
+- B2 不查询数据库、不从请求正文读取用户身份，也不新增回调；现有回调会把请求投递到 `Server` 的 strand，认证身份推导、Repository 查询和 `history_result` 分块留给 B3。
+- 验证：`cmake --build cmake-build-debug --parallel 2` 成功；`ctest --test-dir cmake-build-debug --output-on-failure` 为 2/2 通过。
+- 已知测试缺口：现有 CTest 已直接覆盖历史正文解析，但尚未覆盖真实 `Session` 的认证后网络分派。当前 `verifyJwt()` 依赖硬编码密钥且没有测试注入点；在不复制密钥、也不扩大本步生产代码范围的前提下，该集成测试留待认证配置整改后补齐。
+
+#### 2026-08-16｜W9-3 / B3：Server 历史查询与安全分块响应（已完成）
+
+- `Server` 在自身 strand 上接收 `history_query`，再次复用 `parseHistoryQueryPayload()` 取得强类型请求；会话不存在、未登记认证身份、已被同名新会话接管、数据库不可用或读取失败时，仅向当前会话返回 `scope=history` 错误。
+- 查询用户名只从 `m_session_to_username` 推导；协议层 `before` 显式转换为 Repository 层游标后调用 `loadRecentForUser()`，不在 Server 编写 SQL，也不信任客户端声明的用户身份。
+- `StoredMessage` 统一映射为历史协议记录，并按实际序列化后的 JSON body 字节数分块。所有消息块保持 Repository 的旧到新顺序；只有最后块带 `has_more` 和 `next_cursor`，空查询也回一个 `messages=[]` 的最终块。
+- 单条记录无法装入合法 2048B body 时返回 `history_message_too_large` 并记录日志；所有块先在内存中确定，再开始发送，避免出现半截成功响应。
+- 新增 `history_response_test`，直接验证 Server 使用的响应序列化逻辑：字段映射、最终/中间块字段边界、空查询最终响应及真实 JSON body 超限判断。
+- 验证：`cmake --build cmake-build-debug --parallel 2` 成功；`ctest --test-dir cmake-build-debug --output-on-failure` 为 3/3 通过。
+- 剩余缺口：认证后的端到端网络历史查询仍依赖可注入的 JWT 测试配置；B3 已完成服务端实现，下一步进入 C1，由 Qt 客户端在认证成功后请求并解析历史响应。
 
 ---
 

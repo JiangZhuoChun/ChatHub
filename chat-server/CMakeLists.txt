@@ -2,6 +2,13 @@ cmake_minimum_required(VERSION 3.21)
 
 find_package(SQLite3 REQUIRED)
 
+find_package(OpenSSL REQUIRED)
+
+# CMake 4.3 新增 SQLite3::SQLite3；旧版仅提供 SQLite::SQLite3。
+if(NOT TARGET SQLite3::SQLite3 AND TARGET SQLite::SQLite3)
+    add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
+endif()
+
 # 服务端可执行程序、示例和测试共享的编译配置。
 set(CHAT_SERVER_INCLUDE_DIRS
     ${ASIO_INCLUDE_DIR}
@@ -50,7 +57,7 @@ target_link_directories(chat-server PRIVATE
 )
 target_link_libraries(chat-server PRIVATE
     ${CHAT_SERVER_NETWORK_LIBRARIES}
-    crypto
+    OpenSSL::Crypto
     SQLite3::SQLite3
 )
 
@@ -76,6 +83,24 @@ target_link_libraries(message_repository_test PRIVATE
 )
 register_chat_server_test(message_repository_test)
 
+add_executable(history_response_test
+    examples/history_response_test.cpp
+    src/net/session.cpp
+    src/protocol/frame_decoder.cpp
+    src/protocol/chat_payload.cpp
+    src/repository/message_repository.cpp
+)
+configure_chat_server_target(history_response_test)
+target_include_directories(history_response_test PRIVATE
+    ${JWT_INCLUDE_DIR}
+)
+target_link_libraries(history_response_test PRIVATE
+    ${CHAT_SERVER_NETWORK_LIBRARIES}
+    OpenSSL::Crypto
+    SQLite3::SQLite3
+)
+register_chat_server_test(history_response_test)
+
 add_executable(jwt_demo
     examples/jwt_demo.cpp
 )
@@ -83,10 +108,6 @@ configure_chat_server_target(jwt_demo)
 target_include_directories(jwt_demo PRIVATE
     ${JWT_INCLUDE_DIR}
 )
-target_link_directories(jwt_demo PRIVATE
-    ${SQLITE3_LIB_DIR}
-)
 target_link_libraries(jwt_demo PRIVATE
-    crypto
+    OpenSSL::Crypto
 )
-register_chat_server_test(jwt_demo)
