@@ -206,18 +206,20 @@ ChatMessage ChatClient::makeReceivedChatMessage(const QJsonObject &object)
     message.content = object.value("content").toString();
     message.send_at = QDateTime::fromString(object.value("send_at").toString(), Qt::ISODate);
     message.status = ChatMessageStatus::Received;
+    message.server_received_at_ms = object.value(QStringLiteral("server_received_at_ms")).toInteger();
 
     return message;
 }
 
 ChatMessage ChatClient::makeMessageStateUpdate(const QString &local_id, const ChatMessageStatus status,
-    const QString &failure_reason,const QString& message_id)
+    const QString &failure_reason,const QString& message_id, std::optional<qint64> server_received_at_ms)
 {
     ChatMessage update;
     update.message_id = message_id;
     update.local_id = local_id;
     update.status = status;
     update.failure_reason = failure_reason;
+    update.server_received_at_ms = server_received_at_ms;
     update.from = "";
     update.to = "";
     update.content = "";
@@ -450,6 +452,15 @@ void ChatClient::handleChatBody(const QByteArray& body) {
         emit serverError(QStringLiteral("聊天信息时间字段错误"));
         return;
     }
+
+    const QJsonValue server_received_at_ms_value = object.value(QStringLiteral("server_received_at_ms"));
+    const qint64 server_received_at_ms = server_received_at_ms_value.toInteger(-1);
+    if (!server_received_at_ms_value.isDouble() || server_received_at_ms < 0 ||
+        server_received_at_ms_value.toDouble() != static_cast<double>(server_received_at_ms))
+    {
+        emit serverError(QStringLiteral("chat 缺少有效的 server_received_at_ms"));
+        return;
+    }
     const auto message = makeReceivedChatMessage(object);
     emit chatMessageReceived(message);
 }
@@ -525,7 +536,18 @@ void ChatClient::handleChatAckBody(const QByteArray& body) {
         emit serverError(QStringLiteral("聊天确认消息字段错误"));
         return;
     }
-    emit chatMessageAccepted(makeMessageStateUpdate(local_id, ChatMessageStatus::Accepted,{},message_id));
+    const QJsonValue server_received_at_value =
+    object.value(QStringLiteral("server_received_at_ms"));
+    const qint64 server_received_at_ms =
+        server_received_at_value.toInteger(-1);
+
+    if (!server_received_at_value.isDouble()|| server_received_at_ms < 0|| server_received_at_value.toDouble()
+            != static_cast<double>(server_received_at_ms))
+    {
+        emit serverError(QStringLiteral("chat 缺少有效的 server_received_at_ms"));
+        return;
+    }
+    emit chatMessageAccepted(makeMessageStateUpdate(local_id, ChatMessageStatus::Accepted,{},message_id,server_received_at_ms));
 }
 
 // 功能：校验服务端返回的最终送达状态，并通知界面更新对应已有消息。

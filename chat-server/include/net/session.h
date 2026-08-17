@@ -11,7 +11,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
-
+#include <vector>
 namespace net {
 
 
@@ -56,6 +56,11 @@ public:
     // 功能：将待发送消息投递到本会话 strand，避免多个线程并发写同一 Socket。
     void send(protocol::MessageType type, std::string body);
 
+    // 功能：按实际写入完成顺序发送多个已校验的历史响应正文，避免一次性挤满通用写队列。
+    // 输入：每个 body 都是完整 JSON，且长度已经不超过 kMaxFrameBodyLength。
+    // 输出：每个 body 被编码为一个 history_result 帧，按原顺序发送。
+    void sendHistoryResultBodies(std::vector<std::string> bodies);
+
     // 功能：Server 可调用；它只把关闭任务 asio::post 到 m_strand
     void requestClose();
 
@@ -71,6 +76,9 @@ private:
 
     // 功能：写出队首帧，完成后移除队首并继续写剩余帧。
     void writeFrame();
+
+    // 功能：仅在通用写队列为空时，将下一块历史正文交给通用写队列发送。
+    void startNextHistoryResultBody();
 
     // ==================== 模块：认证与业务消息分派 ====================
     // 功能：验证令牌并提取用户名，供认证阶段更新会话身份。
@@ -115,6 +123,9 @@ private:
     // ==================== 模块：待发送帧队列 ====================
     // 功能：按顺序保存等待异步写出的完整协议帧。
     std::deque<WriteItem> m_write_queue;
+
+    // 功能：保存尚未实际写出的历史响应正文；队首永远是下一块。
+    std::deque<std::string> m_pending_history_result_bodies;
 
     // ==================== 模块：会话生命周期状态 ====================
     // 功能：防止同一会话重复触发断开回调。

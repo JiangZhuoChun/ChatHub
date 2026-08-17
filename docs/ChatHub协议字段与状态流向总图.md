@@ -41,7 +41,7 @@
 | `to` | A 提交，ChatServer 校验在线状态 | 一条消息 | 接收者、SQLite `recipient` | 回执发送者身份 |
 | `content` | A 的 Qt 客户端 | 一条消息 | 聊天正文，最多 1024 字节 | UI 状态或服务端排序依据 |
 | `send_at` | A 的 Qt 客户端 | 一条消息 | UI 展示时间，ISO UTC 字符串 | 服务端可信历史排序 |
-| `server_received_at_ms` | ChatServer 首次入库前 | 一条持久记录 | 历史排序；与 `message_id` 组成稳定游标 | UI 发送时间显示 |
+| `server_received_at_ms` | ChatServer 首次入库前 | 一条持久记录 | 历史与实时合并排序；与 `message_id` 组成稳定游标 | UI 发送时间显示或客户端自行生成 |
 | `status` | 协议发送者 | 状态通知帧 | `accepted`、`delivered` 的状态语义 | 消息的持久化身份 |
 | `failure_reason` | Qt 客户端从错误帧转换 | 本地模型 | Failed 气泡的显示原因 | 网络协议字段 |
 | `sender_session_id` | ChatServer | 当前进程 | 待送达时找到 A 的当前连接 | 持久消息身份或跨重启恢复 |
@@ -54,8 +54,8 @@ flowchart LR
     A["A Qt 客户端\n生成 local_id"] --> C["chat 请求\nlocal_id + to + content + send_at"]
     C --> S["ChatServer\n认证、校验、SQLite 入库"]
     S --> M["生成 message_id\n持久记录主键"]
-    M --> ACK["chat_ack 给 A\nlocal_id + message_id + accepted"]
-    M --> FWD["chat 给 B\nmessage_id + local_id + from + to + content + send_at"]
+    M --> ACK["chat_ack 给 A\nlocal_id + message_id + server_received_at_ms + accepted"]
+    M --> FWD["chat 给 B\nmessage_id + local_id + from + to + content + send_at + server_received_at_ms"]
     FWD --> R["B 回执\n仅携带 message_id"]
     R --> P["PendingDelivery[message_id]\n取回 sender_local_id"]
     P --> D["delivered 给 A\nlocal_id + delivered"]
@@ -72,11 +72,11 @@ flowchart LR
 | type | 名称 / 方向 | 当前正文 | 关键校验与副作用 |
 |---:|---|---|---|
 | 1 | `chat`，A → Server | `{ to, content, local_id, send_at }` | Server 从认证会话取得真实 `from`；校验字段、认证、接收者在线、SQLite 写入 |
-| 1 | `chat`，Server → B | `{ message_id, local_id, from, to, content, send_at }` | B 全部字段必须为非空字符串，`send_at` 必须可解析；写入 `ChatMessage` 后再回执 |
+| 1 | `chat`，Server → B | `{ message_id, local_id, from, to, content, send_at, server_received_at_ms }` | B 全部字符串字段必须非空，`send_at` 必须可解析，服务端时间必须是非负整毫秒；写入 `ChatMessage` 后再回执 |
 | 4 | `error`，Server → Client | `{ scope, code, message, local_id? }` | 有 `local_id`：A 将指定气泡置为 `Failed`；无 `local_id`：作为普通服务端错误 |
 | 5 | `auth`，Client → Server | JWT 原始文本 | 未认证 Session 只接受此帧 |
 | 5 | `auth`，Server → Client | `{ ok: true }` | 客户端进入已认证状态 |
-| 6 | `chat_ack`，Server → A | `{ local_id, message_id, status: "accepted" }` | A 用 `local_id` 找到既有气泡，写入 `message_id`，状态改为 `Accepted` |
+| 6 | `chat_ack`，Server → A | `{ local_id, message_id, status: "accepted", server_received_at_ms }` | A 用 `local_id` 找到既有气泡，写入 `message_id` 和非负整毫秒服务端时间，状态改为 `Accepted` 后按服务端顺序整理会话 |
 | 7 | `delivery_receipt`，B → Server | `{ message_id }` | Server 校验 B 的认证身份等于 `PendingDelivery::recipient_username` |
 | 7 | `delivery_receipt`，Server → A | `{ local_id, status: "delivered" }` | A 仅改既有气泡状态，不新建气泡、不置顶 |
 | 8 | `online_users`，Server → Client | `{ users: ["alice", "bob"] }` | 客户端严格校验字符串数组、去重后整体替换在线列表 |
@@ -107,8 +107,8 @@ flowchart TD
     V["Server 校验\n帧 / 正文 / 认证 / 当前会话 / B 在线"]
     DB["SQLite messages\nmessage_id, sender, recipient, client_local_id, content, client_send_at, server_received_at_ms"]
     P["内存 PendingDeliveryMap\nmessage_id → sender_username, sender_session_id, sender_local_id, recipient_username"]
-    B["转发给 B\n含 message_id"]
-    A["chat_ack 给 A\nlocal_id + message_id"]
+    B["转发给 B\n含 message_id + server_received_at_ms"]
+    A["chat_ack 给 A\nlocal_id + message_id + server_received_at_ms"]
     R["B → Server: delivery_receipt\nmessage_id"]
     D["认证身份校验\n回执者 == recipient_username"]
     N["通知 A\nlocal_id + delivered"]
@@ -122,7 +122,7 @@ flowchart TD
 
 | 位置 | 保存什么 | 生命周期 | 重启后 |
 |---|---|---|---|
-| A 的 `ChatMessage` | `local_id`、收到 ack 后的 `message_id`、展示状态 | 客户端当前内存，W9 后扩展为历史合并来源 | 当前版本不恢复 |
+| A 的 `ChatMessage` | `local_id`、收到 ack 后的 `message_id`、`server_received_at_ms`、展示状态 | 客户端当前内存，W9 后扩展为历史与实时合并来源 | 当前版本不恢复 |
 | SQLite `messages` | 一条消息的完整持久业务数据 | 数据库 | 保留，可供历史查询 |
 | `PendingDeliveryMap` | 回执归属与 A 侧气泡定位信息，不保存正文 | Server 进程内，直至回执或相关断线 | 清空，不能恢复 `Delivered` |
 
@@ -155,7 +155,7 @@ stateDiagram-v2
 |---|---|---|---|
 | `Sending` | 本地创建消息或对失败消息重试 | `status`、`failure_reason` | 仅恢复 Sending 时置顶会话 |
 | `Failed` | 本地失败或带 `local_id` 的服务端错误 | `status`、`failure_reason` | 不创建第二个气泡 |
-| `Accepted` | 收到合法 `chat_ack` | `message_id`、`status`、清空失败原因 | 不代表 B 已收到 |
+| `Accepted` | 收到合法 `chat_ack` | `message_id`、`server_received_at_ms`、`status`、清空失败原因 | 不代表 B 已收到 |
 | `Delivered` | 收到合法服务端最终通知 | `status`、清空失败原因 | 不新建气泡、不增加未读、不置顶 |
 | `Received` | B 收到 Server 转发的 chat | 完整消息字段 | 不能显示为本人“已送达” |
 

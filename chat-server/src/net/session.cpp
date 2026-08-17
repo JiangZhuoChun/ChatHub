@@ -47,6 +47,17 @@ void Session::send(const protocol::MessageType type, std::string body) {
                });
 }
 
+void Session::sendHistoryResultBodies(std::vector<std::string> bodies) {
+    const auto self = shared_from_this();
+    asio::post(m_strand,
+        [self ,bodies = std::move(bodies)]() mutable {
+        for (std::string& body : bodies) {
+            self->m_pending_history_result_bodies.push_back(std::move(body));
+        }
+            self->startNextHistoryResultBody();
+    });
+}
+
 // 功能：将关闭请求投递到会话 strand，避免 Server 线程直接并发修改 Session 状态。
 void Session::requestClose() {
     const auto self = shared_from_this();
@@ -136,11 +147,24 @@ void Session::writeFrame() {
                     return;
                 }
 
-                const auto send_type = m_write_queue.front().type;
                 m_write_queue.pop_front();
                 std::cout << "发送成功：" << bytes_transferred << "字节" << std::endl;
-                self->writeFrame();
+
+                if (m_write_queue.empty()) {
+                    self->startNextHistoryResultBody();
+                }else {
+                    self->writeFrame();
+                }
             }));
+}
+// 功能：从挂起列表中取出下一个历史结果正文并发送
+void Session::startNextHistoryResultBody() {
+    if (!m_write_queue.empty() || m_pending_history_result_bodies.empty()) {
+        return;
+    }
+    std::string body = std::move(m_pending_history_result_bodies.front());
+    m_pending_history_result_bodies.pop_front();
+    enqueueAndWrite(protocol::MessageType::history_result,body);
 }
 
 // ==================== 模块：认证与业务消息分派 ====================

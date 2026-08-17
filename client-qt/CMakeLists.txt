@@ -62,3 +62,26 @@ target_link_libraries(history_client_test PRIVATE
 )
 
 add_test(NAME history_client_test COMMAND history_client_test)
+
+# C2.2：验证历史页与实时消息合并、以及本地消息确认后的实际会话显示顺序。
+qt_add_executable(conversation_order_test
+    tests/conversation_order_test.cpp
+    mainwindow.cpp
+    mainwindow.h
+    mainwindow.ui
+    chatclient.cpp
+    chatclient.h
+    chat_types.h
+)
+
+target_include_directories(conversation_order_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/chat-server/include
+)
+
+target_link_libraries(conversation_order_test PRIVATE
+    Qt::Core
+    Qt::Widgets
+    Qt6::Network
+)
+
+add_test(NAME conversation_order_test COMMAND conversation_order_test)

@@ -117,7 +117,8 @@ private:
     static ChatMessage makeMessageStateUpdate(const QString& local_id,
         ChatMessageStatus status,
         const QString& failure_reason = {},
-        const QString& message_id = {});
+        const QString& message_id = {},
+        std::optional<qint64> server_received_at_ms = std::nullopt);
 
 
     // ==================== 模块：协议帧编码与发送 ====================

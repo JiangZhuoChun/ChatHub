@@ -106,6 +106,99 @@ QJsonObject makeHistoryMessage(const QString& message_id, const QString& local_i
     return message;
 }
 
+// 功能：验证实时 chat 和 chat_ack 都将服务端排序时间传递到客户端消息模型。
+bool testRealtimeMessageAndAckKeepServerReceivedTime()
+{
+    QTcpServer server;
+    if (!server.listen(QHostAddress::LocalHost, 9000)) {
+        std::cerr << "无法监听客户端固定测试端口 9000："
+                  << server.errorString().toStdString() << '\n';
+        return false;
+    }
+
+    QTcpSocket* peer = nullptr;
+    QObject::connect(&server, &QTcpServer::newConnection, &server, [&] {
+        peer = server.nextPendingConnection();
+        peer->setParent(&server);
+    });
+
+    ChatClient client;
+    int server_error_count = 0;
+    int received_count = 0;
+    int accepted_count = 0;
+    ChatMessage received_message;
+    ChatMessage accepted_update;
+    QObject::connect(&client, &ChatClient::serverError, &client,
+                     [&](const QString&) { ++server_error_count; });
+    QObject::connect(&client, &ChatClient::chatMessageReceived, &client,
+                     [&](const ChatMessage& message) {
+                         ++received_count;
+                         received_message = message;
+                     });
+    QObject::connect(&client, &ChatClient::chatMessageAccepted, &client,
+                     [&](const ChatMessage& update) {
+                         ++accepted_count;
+                         accepted_update = update;
+                     });
+
+    client.connectWithToken(QStringLiteral("test-token"));
+    if (!waitUntil([&] { return peer != nullptr; })) {
+        std::cerr << "客户端没有建立 TCP 连接\n";
+        return false;
+    }
+
+    constexpr qint64 kServerReceivedAtMs = 1786951200123;
+    QJsonObject chat = makeHistoryMessage(QStringLiteral("message-realtime"),
+                                          QStringLiteral("local-realtime"));
+    chat.insert(QStringLiteral("server_received_at_ms"),
+                static_cast<double>(kServerReceivedAtMs));
+    peer->write(makeFrame(static_cast<quint8>(protocol::MessageType::chat), chat));
+    peer->flush();
+
+    if (!waitUntil([&] { return received_count == 1; }) ||
+        !received_message.server_received_at_ms.has_value() ||
+        received_message.server_received_at_ms.value() != kServerReceivedAtMs) {
+        std::cerr << "实时 chat 没有保留 server_received_at_ms\n";
+        return false;
+    }
+
+    QJsonObject ack;
+    ack.insert(QStringLiteral("message_id"), QStringLiteral("message-ack"));
+    ack.insert(QStringLiteral("local_id"), QStringLiteral("local-ack"));
+    ack.insert(QStringLiteral("status"), QStringLiteral("accepted"));
+    ack.insert(QStringLiteral("server_received_at_ms"),
+               static_cast<double>(kServerReceivedAtMs));
+    peer->write(makeFrame(static_cast<quint8>(protocol::MessageType::chat_ack), ack));
+    peer->flush();
+
+    if (!waitUntil([&] { return accepted_count == 1; }) ||
+        !accepted_update.server_received_at_ms.has_value() ||
+        accepted_update.server_received_at_ms.value() != kServerReceivedAtMs) {
+        std::cerr << "chat_ack 没有保留 server_received_at_ms\n";
+        return false;
+    }
+
+    QJsonObject invalid_chat = chat;
+    invalid_chat.insert(QStringLiteral("server_received_at_ms"), 1.5);
+    peer->write(makeFrame(static_cast<quint8>(protocol::MessageType::chat), invalid_chat));
+
+    QJsonObject invalid_ack = ack;
+    invalid_ack.remove(QStringLiteral("server_received_at_ms"));
+    peer->write(makeFrame(static_cast<quint8>(protocol::MessageType::chat_ack), invalid_ack));
+
+    QJsonObject negative_chat = chat;
+    negative_chat.insert(QStringLiteral("server_received_at_ms"), -1.0);
+    peer->write(makeFrame(static_cast<quint8>(protocol::MessageType::chat), negative_chat));
+    peer->flush();
+
+    if (!waitUntil([&] { return server_error_count == 3; }) ||
+        received_count != 1 || accepted_count != 1) {
+        std::cerr << "非法 server_received_at_ms 没有被拒绝\n";
+        return false;
+    }
+    return true;
+}
+
 // 功能：验证 C1 主链路：认证成功后请求历史，收齐多块结果后只通知一次完整页面。
 bool testInitialHistoryQueryAndChunkAggregation()
 {
@@ -244,9 +337,13 @@ bool testInitialHistoryQueryAndChunkAggregation()
     if (completed_has_more || completed_messages.size() != 2 ||
         completed_messages.at(0).message_id != QStringLiteral("message-1") ||
         completed_messages.at(1).message_id != QStringLiteral("message-2") ||
+        !completed_messages.at(0).server_received_at_ms.has_value() ||
+        !completed_messages.at(1).server_received_at_ms.has_value() ||
+        completed_messages.at(0).server_received_at_ms.value() != 1786951200000 ||
+        completed_messages.at(1).server_received_at_ms.value() != 1786951200000 ||
         completed_messages.at(0).status != ChatMessageStatus::Received ||
         completed_messages.at(1).status != ChatMessageStatus::Received) {
-        std::cerr << "历史页面内容、顺序或状态错误\n";
+        std::cerr << "历史页面内容、排序时间、顺序或状态错误\n";
         return false;
     }
 
@@ -262,11 +359,12 @@ bool testInitialHistoryQueryAndChunkAggregation()
 int main(int argc, char* argv[])
 {
     QCoreApplication application(argc, argv);
-    if (testInitialHistoryQueryAndChunkAggregation()) {
-        std::cout << "PASS: initial history query and chunk aggregation\n";
+    if (testRealtimeMessageAndAckKeepServerReceivedTime() &&
+        testInitialHistoryQueryAndChunkAggregation()) {
+        std::cout << "PASS: realtime timestamps and initial history query\n";
         return 0;
     }
 
-    std::cerr << "FAIL: initial history query and chunk aggregation\n";
+    std::cerr << "FAIL: realtime timestamps or initial history query\n";
     return 1;
 }

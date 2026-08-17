@@ -62,6 +62,8 @@ private slots:
     // 功能：将服务端转发的聊天消息渲染为收到消息气泡。
     void onChatMessageReceived(const ChatMessage& message);
 
+    void onHistoryPageReceived(const QList<ChatMessage>& messages,bool has_more);
+
 
 private:
 
@@ -85,6 +87,8 @@ private:
     void clearMessageBubbles() const;
     // 功能：渲染当前会话。
     void renderCurrentConversation();
+    // 功能：按服务端持久化顺序整理指定会话；未确认的本地消息保持在末尾。
+    void sortConversationMessages(const QString& peer);
     // 功能：创建带发送者、正文、时间、状态属性和重试按钮的聊天气泡。
     void appendMessageBubble(const ChatMessage& message);
     // 功能：刷新指定联系人的会话项，更新未读消息计数。

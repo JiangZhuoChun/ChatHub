@@ -3,6 +3,8 @@
 #include "chatclient.h"
 #include "ui_mainwindow.h"
 
+#include <algorithm>
+#include <QSet>
 #include <QLabel>
 #include <QStyle>
 #include <QLayoutItem>
@@ -11,6 +13,26 @@
 #include <QUuid>
 namespace {
     constexpr int kConversationPreviewMaxLength = 24;
+
+    // 功能：判断 left 是否应排在 right 前；持久化消息按服务端时间和 message_id 正序排列。
+    bool messageComesBefore(const ChatMessage& left, const ChatMessage& right)
+    {
+        const bool left_has_time = left.server_received_at_ms.has_value();
+        if (const bool right_has_time = right.server_received_at_ms.has_value();
+            left_has_time != right_has_time) {
+            return left_has_time;// 有服务端时间的排在前面
+        }
+        if (!left_has_time) {
+            return false;
+        }
+
+        const qint64 left_time = left.server_received_at_ms.value();
+        const qint64 right_time = right.server_received_at_ms.value();
+        if (left_time != right_time) {
+            return left_time < right_time;// 服务端时间早的排在前面
+        }
+        return left.message_id < right.message_id;// message_id 早的排在前面
+    }
 }
 
 // ==================== 模块：窗口生命周期 ====================
@@ -156,11 +178,16 @@ void MainWindow::onChatMessageAccepted(const ChatMessage& update) {
         return;
     }
 
+    const QString peer = message->to;
+
     message->message_id = update.message_id;
     message->status = update.status;
     message->failure_reason = update.failure_reason;
+    message->server_received_at_ms = update.server_received_at_ms;
 
-    if (m_currentPeer == message->to) {
+    sortConversationMessages(peer);
+
+    if (m_currentPeer == peer) {
         renderCurrentConversation();
     }
     statusBar()->showMessage(QStringLiteral("服务器已接收消息"));
@@ -201,17 +228,74 @@ void MainWindow::onChatMessageDelivered(const ChatMessage &update) {
 // 功能：将服务端转发的消息渲染为收到状态的聊天气泡。
 void MainWindow::onChatMessageReceived(const ChatMessage& message)
 {
-    m_conversations[message.from].append(message);
-    ensureConversationItem(message.from);
-    moveConversationItemToTop(message.from);
-    if (m_currentPeer == message.from) {
+    const QString peer = message.from;
+    //追加实时消息
+    m_conversations[peer].append(message);
+    // 排序模型
+    sortConversationMessages(peer);
+    // 确保会话列表项存在
+    ensureConversationItem(peer);
+    // 移动会话列表项到顶部
+    moveConversationItemToTop(peer);
+
+    if (m_currentPeer == peer) {
         renderCurrentConversation();
     }
     else {
-        m_unreadCounts[message.from]++;
+        m_unreadCounts[peer]++;
     }
-    refreshConversationItem(message.from);
+    refreshConversationItem(peer);
     m_chat->sendDeliveryReceipt(message.message_id);
+}
+
+void MainWindow::onHistoryPageReceived(const QList<ChatMessage> &messages, bool has_more)
+{
+    Q_UNUSED(has_more);
+
+    QSet<QString> known_message_ids;//用于去重
+    QSet<QString> changed_peers;//用于记录哪些会话需要刷新
+
+    //1.把现有模型中的ID收集,cbegin()/cend() 是“只读遍历”
+    for (auto conversation_it = m_conversations.cbegin();
+        conversation_it != m_conversations.cend();++conversation_it)
+    {
+        for (const ChatMessage& existing_message : conversation_it.value())
+        {
+            known_message_ids.insert(existing_message.message_id);
+        }
+    }
+    //2.逐条合并历史页
+    for (const auto& message : messages)
+    {
+        if (known_message_ids.contains(message.message_id)) {
+            continue;
+        }
+        ChatMessage history_message = message;
+        QString peer;
+        //3.计算peer
+        if (history_message.from == m_username) {
+            peer = history_message.to;
+            history_message.status = ChatMessageStatus::Accepted;
+        }else if (history_message.to == m_username) {
+            peer = history_message.from;
+        }else {
+            continue;
+        }
+        //4.真正提交模型，并立刻登记 ID
+        m_conversations[peer].append(history_message);
+        known_message_ids.insert(history_message.message_id);
+        changed_peers.insert(peer);
+    }
+    //5.循环结束后才刷新 UI
+    for (const auto& peer : changed_peers)
+    {
+        sortConversationMessages(peer);
+        ensureConversationItem(peer);
+        refreshConversationItem(peer);
+    }
+    if (changed_peers.contains(m_currentPeer)) {
+        renderCurrentConversation();
+    }
 }
 
 // ==================== 模块：窗口初始化与连接状态辅助 ====================
@@ -236,6 +320,7 @@ void MainWindow::connectSlots()
     connect(m_chat, &ChatClient::chatMessageDelivered, this, &MainWindow::onChatMessageDelivered);
     connect(m_chat, &ChatClient::chatMessageReceived, this, &MainWindow::onChatMessageReceived);
     connect(m_chat, &ChatClient::onlineUsersChanged, this, &MainWindow::updateOnlineUsers);
+    connect(m_chat,&ChatClient::historyPageReceived,this,&MainWindow::onHistoryPageReceived);
 
     connect(ui->conversationList, &QListWidget::itemClicked, this, &MainWindow::onConversationItemClicked);
     connect(ui->onlineUsersList, &QListWidget::itemClicked, this, &MainWindow::onOnlineUserItemClicked);
@@ -318,6 +403,20 @@ void MainWindow::renderCurrentConversation()
         appendMessageBubble(message);
     }
 }
+
+void MainWindow::sortConversationMessages(const QString &peer) {
+    if (peer.isEmpty()) {
+        return;
+    }
+    auto conversation_it = m_conversations.find(peer);
+    if (conversation_it == m_conversations.end()) {
+        return;
+    }
+
+    QList<ChatMessage>& messages = conversation_it.value();
+    std::stable_sort(messages.begin(),messages.end(),messageComesBefore);
+}
+
 // 功能：向消息气泡布局中添加一个新气泡。
 void MainWindow::appendMessageBubble(const ChatMessage& message)
 {

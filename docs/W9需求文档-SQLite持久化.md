@@ -56,6 +56,7 @@ W9 交付的是单机、单 ChatServer 下的“已接受消息历史”。它�
 - `client_send_at`：客户端传来的 ISO 时间，仅供 UI 展示；保持现有格式和校验，不作为可信排序依据；
 - `server_received_at_ms`：ChatServer 在首次入库前生成的 UTC 毫秒时间戳；历史查询唯一使用它排序；
 - 相同毫秒按 `message_id` 决定稳定顺序；客户端传未来/过去时间也不能改变服务端历史顺序。
+- 服务端转发的 `chat` 与成功的 `chat_ack` 都必须携带已持久化记录的 `server_received_at_ms`；完全重复请求的确认复用既有记录时间，客户端不得自行生成或改写该值。
 
 ### 4. 持久化与确认语义
 
@@ -201,7 +202,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_order
 |---|---|
 | `chat_protocol.h` | `kMaxFrameBodyLength = 2048`；新增 type=9/10；同步已知类型判断。 |
 | 新增 `MessageRepository` | 打开/迁移 SQLite，封装写入、幂等查询、最近历史查询和错误转换。 |
-| `server.cpp` / `server.h` | 路由按“提交 → 待送达 → 转发 → ack”顺序；ack 与转发正文携带 `message_id`；新增仅认证用户可调用的历史查询。 |
+| `server.cpp` / `server.h` | 路由按“提交 → 待送达 → 转发 → ack”顺序；ack 与转发正文携带 `message_id` 和 `server_received_at_ms`；新增仅认证用户可调用的历史查询。 |
 | `chat_payload.*` | 保持 `content` 的 1024B 校验；新增 history 请求字段与游标校验。 |
 | `chatclient.*` | 认证成功后请求首屏历史；解析历史分块；接收实时 chat/ack 时接收 `message_id`。 |
 | `ChatMessage` / `mainwindow.cpp` | 增加 `message_id`；以 `message_id` 合并历史与实时消息；按 `from/to` 复用现有会话模型分组。 |
@@ -266,6 +267,80 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_order
 
 ---
 
+#### 2026-08-17｜W9-3 / C2：历史与实时消息的安全合并和正序显示（已完成）
+
+- `ChatMessage` 使用 `std::optional<qint64> server_received_at_ms` 表示“服务端尚未持久化”的本地消息；服务端在正常确认、完全重复确认和转发给接收者的 `chat` 中均下发持久化记录的同一时间。客户端严格拒绝缺失、负数或小数时间，历史、实时和发送者确认最终落入同一个模型字段。
+- `MainWindow` 以 `message_id` 跳过已存在的历史记录，按 `from/to` 映射会话；每个受影响会话按 `(server_received_at_ms ASC, message_id ASC)` 批量稳定排序。无服务端时间的本地 Sending/Failed 消息保持在已持久化消息之后，并保留彼此相对顺序。
+- 本地消息收到 `chat_ack` 后，先回填 `message_id`、状态和服务端时间，再排序；排序可能重排 `QList` 元素，因此排序前复制 `peer`，排序后不再访问原列表元素指针。
+- 新增 `conversation_order_test`：验证实时 M3 先到、历史 M1/M2/M3 后到仍显示 M1→M2→M3；验证本地待确认消息获得更早服务端时间后重新定位；验证相同毫秒时按 `message_id` 稳定排序。`history_client_test` 同步验证实时 chat/ack 与历史消息保留服务端时间及非法时间拒绝。
+- 验证：`cmake -S . -B cmake-build-debug` 与 `cmake --build cmake-build-debug --parallel 2` 成功；`ctest --test-dir cmake-build-debug --output-on-failure` 为 5/5 通过；C2.2 范围 Qt lint 无输出，独立审查无未解决高置信问题。
+- 剩余缺口：W9-4 仍需完成重启、幂等、容量、数据库失败和双客户端 UI 的整体验收与故障复盘。
+
+---
+
+#### 2026-08-17｜W9-4 / A1：重启后的历史留存与正序显示（人工验收通过）
+
+- 用户从 `cmake-build-debug/chat-server` 工作目录确认 `chathub.db` 存在，大小为 28672 字节；该文件是本次 ChatServer 运行产生和使用的 SQLite 数据库。
+- 按“停止并从相同目录重启 ChatServer → 重新登录”的路径观察到已有会话仍出现，历史消息按服务端接收时间正序显示。这证明持久化文件没有因服务重启丢失，且历史查询结果已正确进入会话 UI。
+- 在保持 Alice 原聊天窗口、重启并重新认证后，用户确认本人历史消息不再显示“已送达”，即按历史语义恢复为 `Accepted`；同时每条标记消息仅出现一次，证明历史页与窗口中已有实时消息按 `message_id` 合并时没有重复气泡。
+- 剩余缺口：W9-4 的 A2 幂等、A3 50 条/分块/2048B、A4 数据库失败存活、A5 汇总与故障复盘尚未开始。
+
+---
+
+#### 2026-08-17｜W9-4 / A2.1：Repository 幂等存储回归（自动验证通过）
+
+- 扩展 `message_repository_test`：首次写入返回 `Stored` 和非空持久 `message_id`；使用相同 sender、`local_id`、接收者、正文、`client_send_at` 重放时返回 `DuplicateSame`，并复用首次的 `message_id` 与 `server_received_at_ms`；即使重放对象携带新的本地候选服务端时间，也不改变原记录。
+- 同一 sender + `local_id` 但正文不同返回 `IdempotencyConflict`；随后查询历史仍只有一条原正文记录，证明冲突不会改写已提交消息。
+- 临时数据库的删除放在 `MessageRepository` 离开作用域之后：Windows 不允许在 SQLite 连接仍持有文件句柄时删除文件。初次测试由此失败，按对象生命周期修复后，`cmake --build cmake-build-debug --target message_repository_test --parallel 2` 成功，`ctest --test-dir cmake-build-debug -R ^message_repository_test$ --output-on-failure` 为 1/1 通过。
+- 剩余缺口：A2.2 仍需验证 Server 收到 `DuplicateSame` 后只向 A 重发既有 ack、绝不再次转发给 B；A3、A4、A5 未开始。
+
+---
+
+#### 2026-08-17｜W9-4 / A2.2：重复请求不重复转发（端到端自动验证通过）
+
+- 在临时工作目录启动独立 `chat-server.exe`，以两个一次性原始 TCP 客户端分别认证为 A 和 B；临时目录中的 SQLite 数据库在测试结束后删除，因此不使用开发数据库。
+- A 连续发送两次字节完全相同的 `chat` JSON（相同 `local_id`、接收者、正文和 `send_at`）。B 只收到一次带标记正文的 `chat`；第二次请求后 A 收到 `chat_ack`，其 `message_id` 与 `server_received_at_ms` 均与第一次 ack 相同；在额外观察窗口内 B 未收到第二个同标记 `chat`。
+- 该结果证明 `DuplicateSame` 分支在回复 A 后立即返回，没有再次登记待送达记录或执行转发。A2 的持久化合同与服务端可见副作用均已覆盖。
+- 剩余缺口：A3 50 条/分块/2048B、A4 数据库失败存活、A5 汇总与故障复盘尚未开始。
+
+---
+
+#### 2026-08-17｜W9-4 / A3：历史分块顺序发送（端到端自动验证通过）
+
+- `Server::handleHistoryQuery()` 在全部历史分块通过 2048B 上限检查后，先将每块序列化为 `std::vector<std::string>`，再一次性调用 `Session::sendHistoryResultBodies()`；因此单条历史记录过大时仍会在发送任何结果前返回错误，不会产生半页响应。
+- `Session` 将这些已验证正文保存在独立的待发送历史队列中。每次异步写完成后，只有通用写队列为空时才取出下一块历史正文并启动写入，避免一次性将大量合法 `history_result` 帧压入上限为 3 的通用写队列而关闭连接。
+- 独立 TCP 容量验证在临时工作目录启动 `chat-server.exe`，先让 A 向 B 写入 50 条、每条恰好 1024B 的聊天正文，再让新的 A 连接查询 `limit=50`。结果收到 50 个 `history_result` 块、共 50 条唯一 `message_id`；每个实际 `body <= 2048B`，消息按 `(server_received_at_ms, message_id)` 正序，唯一最终块为 `has_more=false`、`next_cursor=null`。测试进程退出后临时目录被删除，未使用开发数据库。
+- 验证：`cmake --build cmake-build-debug --parallel 2` 成功；`ctest --test-dir cmake-build-debug --output-on-failure` 为 5/5 通过；A3 范围 `git diff --check` 无输出。
+- 剩余缺口：A4 数据库失败时服务存活、A5 汇总回归与故障复盘尚未开始。
+
+---
+
+#### 2026-08-17｜W9-4 / A4：数据库故障隔离（端到端自动验证通过）
+
+- 临时工作目录中预先创建同名目录 `chathub.db`，可强制 `MessageRepository::open()` 失败；Server 仍持续监听。已认证的聊天请求返回 `database_unavailable`，历史请求返回 `scope=history` 的 `database_read_failed`，已有 Session 的 `ping/pong` 与新的认证连接均保持可用。
+- 另一组临时测试以 SQLite `BEGIN EXCLUSIVE` 锁住已打开的数据库。`busy_timeout=3000` 到期后，聊天写入返回 `database_write_failed`、历史读取返回 `database_read_failed`；锁释放后新的聊天可正常写入、转发和确认，且 Server 进程始终存活。
+- 修复并验证协议字段：`Server::handleChat()` 的 `StoreResult::DatabaseError` 分支已从 `database_error` 统一为需求规定的 `database_write_failed`，同时保留发送者的 `local_id`。完整打开/锁定测试通过；`ctest --test-dir cmake-build-debug --output-on-failure` 为 5/5 通过，A4 范围 `git diff --check` 无输出。
+- 剩余缺口：A5 汇总回归与故障复盘尚未开始。
+
+---
+
+#### 2026-08-17｜W9-4 / A5.1：重启后历史与实时消息交错（人工验收通过）
+
+- 用户在正常开发环境完成“发送标记消息 → 重启 ChatServer → 重新认证并自动加载历史 → 再发送实时标记消息”的双客户端路径。Bob 窗口截图显示 `Alice: A5-before-restart [20:46]` 在前、`Bob: A5-after-restart [20:48]` 在后，连接状态正常；两个标记消息均仅出现一次。
+- 用户进一步确认 Alice 的重启前本人历史消息已不再显示“已送达”。因此历史恢复不会伪造进程内 `PendingDeliveryMap` 才能证明的 `Delivered` 状态。
+- 该人工证据与 A1 的持久化恢复、A3 的分块容量、C2 的去重排序自动测试共同覆盖历史与实时交错的 UI 可观察结果。剩余缺口：A5.2 汇总回归、故障复盘与提交准备。
+
+---
+
+#### 2026-08-17｜W9-4 / A5.2：最终回归与交付边界（验证通过）
+
+- 当前构建目录执行 `cmake --build cmake-build-debug --parallel 2`，构建系统报告无待构建目标；随后执行 `ctest --test-dir cmake-build-debug --output-on-failure`，`frame_decoder_test`、`message_repository_test`、`history_response_test`、`history_client_test`、`conversation_order_test` 共 5/5 通过。
+- 回归证据汇总：A1 重启后历史留存与状态人工验收；A2.1 Repository 幂等与生命周期测试；A2.2 重复请求端到端去副作用测试；A3 50 条 1024B 历史分块 TCP 容量测试；A4 数据库打开/写入/读取故障隔离测试；A5.1 双客户端 UI 历史与实时交错人工验收。
+- 交付边界检查确认本次 W9 范围只包含 ChatServer 历史发送、数据库幂等测试和本需求记录；工作区中其他用户改动、构建目录和本地学习资料不纳入本次交付，也未执行提交或推送。
+- W9-4 A1–A5.2 的验收证据已闭环；后续若提交，必须按路径只暂存本次范围，并再次检查 `status`、暂存区 diff 和上述验证命令结果。
+
+---
+
 ## 八、验收矩阵
 
 | 场景 | 可观察结果 |
@@ -279,7 +354,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_order
 | 历史权限 | 未认证或篡改历史查询字段不能读取记录；服务端只返回当前认证用户参与的消息。 |
 | 数据库失败 | SQLite 打开/写入/读取失败有明确日志与错误码；相关请求失败但 Server 不退出、其他连接保持可用。 |
 
-当前自动化覆盖：`message_repository_test` 将临时目录作为数据库路径，验证 `MessageRepository::open()` 返回失败并完成临时目录清理；Server 在数据库不可用时的路由错误和持续监听属于后续集成验收。
+当前自动化覆盖：`message_repository_test` 验证临时目录数据库路径和打开失败清理；独立 TCP 集成验证覆盖 Server 在数据库打开/写入/读取失败时的错误码、持续监听、其他 Session 可用性和解锁恢复。A1 与 A5.1 的 Qt 界面结果由人工验收记录。
 | 容量 | 1024B `content` 加 JSON 封装后可发送；超过内容或帧上限的输入被拒绝。 |
 
 ## 九、最终验收标准

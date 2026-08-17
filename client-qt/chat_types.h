@@ -2,7 +2,8 @@
 
 #include <QDateTime>
 #include <QString>
-
+#include <QtGlobal>
+#include <optional>
 // ==================== 模块：聊天领域类型 ====================
 // 功能：集中定义界面层使用的消息状态和完整聊天记录数据。
 enum class ChatMessageStatus {
@@ -27,6 +28,8 @@ struct ChatMessage {
     QString content;
     // 功能：保存消息发送时刻，统一以 UTC 传输并按需转本地时间显示。
     QDateTime send_at;
+    // 服务端成功持久化后分配的权威排序时间；本地待发送或发送失败消息没有该值。
+    std::optional<qint64> server_received_at_ms = std::nullopt;
     // 功能：保存消息在本地发送、服务端接收和最终送达链路中的当前状态。
     ChatMessageStatus status{ChatMessageStatus::Received};
     // 功能：保存发送失败原因，成功或接收消息时保持为空。

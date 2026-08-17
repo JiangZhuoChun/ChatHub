@@ -308,6 +308,7 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
             ack["message_id"] = outcome.message_id;
             ack["local_id"] = payload.local_id;
             ack["status"] = "accepted";
+            ack["server_received_at_ms"] = outcome.server_received_at_ms;
             sender_it->second->send(
                 protocol::MessageType::chat_ack, boost::json::serialize(ack));
             return;
@@ -318,7 +319,7 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
             return;
         case repository::StoreResult::DatabaseError:
             sender_it->second->send(
-                protocol::MessageType::error, makeRouteErrorBody(payload.local_id, "database_error", "数据库错误"));
+                protocol::MessageType::error, makeRouteErrorBody(payload.local_id, "database_write_failed", "数据库错误"));
             return;
     }
     // 9. 以本次持久化生成的 message_id 登记待送达记录，避免回执关联到其他消息。
@@ -338,6 +339,7 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
     forwarded["to"] = payload.to;
     forwarded["content"] = payload.content;
     forwarded["send_at"] = payload.send_at;
+    forwarded["server_received_at_ms"] = outcome.server_received_at_ms;
     const std::string forward_body = boost::json::serialize(forwarded);
     recv_it->second->send(protocol::MessageType::chat, forward_body);
 
@@ -345,6 +347,7 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message& mess
     ack["local_id"] = payload.local_id;
     ack["status"] = "accepted";
     ack["message_id"] = outcome.message_id;
+    ack["server_received_at_ms"] = outcome.server_received_at_ms;
     sender_it->second->send(protocol::MessageType::chat_ack, boost::json::serialize(ack));
 }
 
@@ -537,14 +540,18 @@ void Server::handleHistoryQuery(SessionId sender_id, const protocol::Message &me
         chunks.push_back(std::move(current_chunk));
     }
     //7. 所有块确定后，才发送
+    std::vector<std::string> response_bodies;
+    response_bodies.reserve(chunks.size());
+
     for (std::size_t index = 0;index < chunks.size();++index) {
         const bool is_last_chunk = index + 1 == chunks.size();
 
-        const auto body =
+        auto body =
             makeHistoryResultBody(payload_result.request_id,chunks[index],is_last_chunk,query_result);
 
-        session_it->second->send(protocol::MessageType::history_result, body);
+        response_bodies.push_back(std::move(body));
     }
+    session_it->second->sendHistoryResultBodies(std::move(response_bodies));
 }
 
 // 功能：构建在线用户列表帧的 body 部分。

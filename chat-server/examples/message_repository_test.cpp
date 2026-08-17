@@ -216,6 +216,77 @@ bool textLoadMessage() {
     return true;
 }
 
+// 功能：验证同一发送者重复使用 local_id 时，完全重复会复用原记录，冲突重复不会改写原记录。
+bool testStoreIdempotency()
+{
+    const fs::path db_path = fs::temp_directory_path() / "message_repository_idempotency_test.db";
+    std::error_code error;
+    fs::remove(db_path, error);
+    if (error) {
+        std::cerr << "无法清理旧幂等测试数据库：" << error.message() << '\n';
+        return false;
+    }
+
+    {
+        repository::MessageRepository repository;
+        if (!repository.open(db_path.string())) {
+            std::cerr << "无法打开幂等测试数据库" << '\n';
+            return false;
+        }
+
+        repository::NewMessage first_message;
+        first_message.sender = "Alice";
+        first_message.recipient = "Bob";
+        first_message.client_local_id = "alice-duplicate-001";
+        first_message.content = "只应保存一次";
+        first_message.client_send_at = "2026-08-17T12:00:00.000Z";
+        first_message.server_received_at_ms = 1000;
+
+        const repository::StoreOutcome first_outcome = repository.storeOrGetExisting(first_message);
+        if (first_outcome.result != repository::StoreResult::Stored || first_outcome.message_id.empty()) {
+            std::cerr << "首次写入没有返回 Stored 和持久 message_id" << '\n';
+            return false;
+        }
+
+        repository::NewMessage replayed_message = first_message;
+        replayed_message.server_received_at_ms = 2000;
+        const repository::StoreOutcome replayed_outcome = repository.storeOrGetExisting(replayed_message);
+        if (replayed_outcome.result != repository::StoreResult::DuplicateSame ||
+            replayed_outcome.message_id != first_outcome.message_id ||
+            replayed_outcome.server_received_at_ms != first_outcome.server_received_at_ms) {
+            std::cerr << "完全重复请求没有复用原持久记录" << '\n';
+            return false;
+        }
+
+        repository::NewMessage conflicting_message = first_message;
+        conflicting_message.content = "同一 local_id 但正文不同";
+        const repository::StoreOutcome conflict_outcome = repository.storeOrGetExisting(conflicting_message);
+        if (conflict_outcome.result != repository::StoreResult::IdempotencyConflict) {
+            std::cerr << "冲突重复请求没有返回 IdempotencyConflict" << '\n';
+            return false;
+        }
+
+        repository::HistoryQueryResult history;
+        if (!repository.loadRecentForUser("Alice", std::nullopt, 50, history)) {
+            std::cerr << "无法查询幂等测试历史记录" << '\n';
+            return false;
+        }
+        if (history.messages.size() != 1 ||
+            history.messages.front().message_id != first_outcome.message_id ||
+            history.messages.front().content != first_message.content) {
+            std::cerr << "重复请求改变了数据库中的原始记录" << '\n';
+            return false;
+        }
+    }
+
+    fs::remove(db_path, error);
+    if (error) {
+        std::cerr << "无法删除幂等测试数据库：" << error.message() << '\n';
+        return false;
+    }
+    return true;
+}
+
 
     //分别验证：MessageRepository 不可复制构造；
     // MessageRepository 不可复制赋值。
@@ -240,6 +311,8 @@ bool runTest(const char* name, const bool passed) {
 
 // 功能：执行 Repository 的失败路径测试，并以进程退出码交给 CTest 判断结果。
 int main() {
-    //return runTest("database open failure", testOpenFailsForDirectory()) ? EXIT_SUCCESS: EXIT_FAILURE;
-    return runTest("load and store messages", textLoadMessage()) ? EXIT_SUCCESS: EXIT_FAILURE;
+    const bool open_failure_passed = runTest("database open failure", testOpenFailsForDirectory());
+    const bool load_store_passed = runTest("load and store messages", textLoadMessage());
+    const bool idempotency_passed = runTest("store idempotency", testStoreIdempotency());
+    return open_failure_passed && load_store_passed && idempotency_passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
