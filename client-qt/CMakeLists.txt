@@ -43,3 +43,22 @@ qt_generate_deploy_app_script(
     NO_UNSUPPORTED_PLATFORM_ERROR
 )
 install(SCRIPT ${deploy_script})
+
+# C1：以本地 TCP 对端验证认证后的历史首屏请求与分块接收。
+qt_add_executable(history_client_test
+    tests/history_client_test.cpp
+    chatclient.cpp
+    chatclient.h
+    chat_types.h
+)
+
+target_include_directories(history_client_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/chat-server/include
+)
+
+target_link_libraries(history_client_test PRIVATE
+    Qt::Core
+    Qt6::Network
+)
+
+add_test(NAME history_client_test COMMAND history_client_test)

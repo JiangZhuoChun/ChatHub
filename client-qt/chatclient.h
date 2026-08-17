@@ -3,6 +3,7 @@
 #include <QAbstractSocket>
 #include <QByteArray>
 #include <QDateTime>
+#include <QList>
 #include <QObject>
 #include <QString>
 #include <QTcpSocket>
@@ -68,11 +69,16 @@ signals:
     // 功能：通知收到服务端转发的聊天消息及其发送者、接收者和时间。
     void chatMessageReceived(const ChatMessage& message);
 
+
     // 功能：通知 local_id 对应的聊天消息发送或服务端处理失败。
     void chatSendFailed(const ChatMessage& update);
 
     // 功能：通知不属于某条聊天消息的普通服务端错误。
     void serverError(const QString& reason);
+
+    // 功能：当前历史请求的全部合法分块收齐后，通知上层获得完整首屏及是否还有更早消息。
+    // 边界：仅最终块发射；本类不在此处合并 UI，也不为历史消息发送送达回执。
+    void historyPageReceived(const QList<ChatMessage>& messages,bool has_more);
 
 private slots:
     // ==================== 模块：Socket 事件处理 ====================
@@ -97,6 +103,9 @@ private:
         waitingAuthResult,
         authenticated
     };
+
+    // 功能：限制首次历史查询及其响应累计的最大消息条数。
+    static constexpr int kInitialHistoryLimit = 50;
 
     // ==================== 模块：初始化与连接辅助 ====================
     // 功能：绑定 Socket、连接计时器的 Qt 信号与本类事件处理函数。
@@ -124,6 +133,10 @@ private:
 
     // 功能：认证完成后发送 type=2 心跳请求，验证连接是否仍可写入。
     void sendPing();
+
+    // 功能：认证成功后生成请求 ID，发送首屏 50 条历史查询。
+    // 返回：写入 TCP 发送缓冲区成功返回 true；失败时清理历史状态、报告错误并中止连接。
+    bool sendInitialHistoryQuery();
 
     // ==================== 模块：收帧与类型分派 ====================
     // 功能：从接收缓存中解析完整帧，处理半包与粘包，并按 type 分派正文。
@@ -158,8 +171,15 @@ private:
     // 功能：严格校验在线用户快照，更新缓存后通知已创建的界面。
     void handleOnlineUsersBody(const QByteArray& body);
 
+    // 功能：校验匹配当前 request_id 的历史分块，暂存消息，并仅在最终块通知上层。
+    // 失败：正文、消息、分页字段或数量上限非法时丢弃本次半页历史并报告错误。
+    void handleHistoryResultBody(const QByteArray& body);
+
+
     // 功能：清除已失效的在线快照，并通知已创建的界面同步清空。
     void clearOnlineUsers();
+    // 功能：清空当前连接中尚未完成的历史请求 ID 与分块暂存消息
+    void clearPendingHistoryRequest();
 
     // ==================== 模块：网络资源 ====================
     // 功能：维护与 chat-server 的 TCP 连接，并产生连接与读写事件。
@@ -179,4 +199,10 @@ private:
 
     // 功能：缓存最后一份有效在线用户快照，供晚创建的主窗口主动回填。
     QStringList m_online_users;
+
+    // 功能：保存当前连接仍在等待响应的历史查询 ID。
+    QString m_active_history_request_id;
+    // 功能：暂存已经校验通过、但尚未收到最终块的一页历史消息。
+    QList<ChatMessage> m_pending_history_messages;
+
 };

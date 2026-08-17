@@ -7,6 +7,7 @@
 #include <QUuid>
 #include <QJsonArray>
 #include <QSet>
+
 // ==================== 模块：生命周期 ====================
 // 功能：创建套接字和连接计时器，并完成所有内部信号槽连接。
 ChatClient::ChatClient(QObject* parent)
@@ -26,6 +27,8 @@ void ChatClient::connectWithToken(const QString& token) {
         return;
     }
 
+    clearPendingHistoryRequest();
+
     if (m_socket.state() != QAbstractSocket::UnconnectedState) {
         m_state = AuthState::idle;
         m_socket.abort();
@@ -43,6 +46,7 @@ void ChatClient::connectWithToken(const QString& token) {
 // 功能：停止连接超时检查，并请求 Socket 在已发送数据处理完成后正常断开。
 void ChatClient::disconnectFromServer() {
     m_connect_timer.stop();
+    clearPendingHistoryRequest();
     m_state = AuthState::idle;
     clearOnlineUsers();
     m_socket.disconnectFromHost();
@@ -141,6 +145,7 @@ void ChatClient::onSocketError(const QAbstractSocket::SocketError socket_error) 
     m_connect_timer.stop();
     const AuthState old_state = m_state;
     m_state = AuthState::idle;
+    clearPendingHistoryRequest();
     clearOnlineUsers();
 
     if (old_state == AuthState::waitingAuthResult) {
@@ -157,6 +162,7 @@ void ChatClient::onSocketDisconnected() {
     m_connect_timer.stop();
     const AuthState old_state = m_state;
     m_state = AuthState::idle;
+    clearPendingHistoryRequest();
     clearOnlineUsers();
 
     if (old_state == AuthState::waitingAuthResult) {
@@ -182,6 +188,7 @@ void ChatClient::connectSlots() {
                 if (m_state != AuthState::connecting) {
                     return;
                 }
+                clearPendingHistoryRequest();
                 m_socket.abort();
                 m_state = AuthState::idle;
                 emit connectionFailed("连接 chat-server 超时");
@@ -286,6 +293,30 @@ void ChatClient::sendPing() {
     }
 }
 
+bool ChatClient::sendInitialHistoryQuery() {
+    //开始一个新历史请求前，暂存区一定为空
+    clearPendingHistoryRequest();
+
+    const QString request_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_active_history_request_id = request_id;
+
+    QJsonObject object;
+    object["request_id"] = request_id;
+    object["limit"] = kInitialHistoryLimit;
+
+    const auto body = QJsonDocument(object).toJson(QJsonDocument::Compact);
+    QString error;
+    if (!writeFrame(static_cast<quint8>(protocol::MessageType::history_query),
+        body,error))
+    {
+        clearPendingHistoryRequest();
+        emit serverError(QStringLiteral("初始历史查询发送失败：") + error);
+        m_socket.abort();
+        return false;
+    }
+    return true;
+}
+
 // ==================== 模块：收帧与类型分派 ====================
 // 功能：从接收缓存中循环解析完整帧，支持 TCP 半包和一次收到多帧的情况。
 // 失败：帧头不符合协议时清空认证状态、通知认证失败并断开连接。
@@ -296,12 +327,17 @@ void ChatClient::processReceivedFrames() {
         const auto magic = static_cast<quint16>(header[0] << 8 | header[1]);
         const quint8 version = header[2];
         const quint8 type = header[3];
-        const auto body_length = static_cast<quint32>(
-            header[4] << 24 | header[5] << 16 | header[6] << 8 | header[7]);
+        // 每个长度字节先转为无符号 32 位数再左移，避免损坏帧触发有符号左移未定义行为。
+        const auto body_length = (static_cast<quint32>(header[4]) << 24) |
+                                          (static_cast<quint32>(header[5]) << 16) |
+                                          (static_cast<quint32>(header[6]) << 8) |
+                                          static_cast<quint32>(header[7]);
 
         if (magic != protocol::kFrameMagic || version != protocol::kProtocolVersion ||
             !protocol::isKnownMessageType(type) ||
-            body_length > protocol::kMaxFrameBodyLength) {
+            body_length > protocol::kMaxFrameBodyLength)
+        {
+            clearPendingHistoryRequest();
             m_state = AuthState::idle;
             emit authFailed("收到非法聊天协议帧");
             m_socket.disconnectFromHost();
@@ -345,8 +381,11 @@ void ChatClient::dispatchFrame(const quint8 type, const QByteArray& body) {
     case static_cast<quint8>(protocol::MessageType::delivery_receipt):
         handleDeliveryReceiptBody(body);
         break;
-        case static_cast<quint8>(protocol::MessageType::online_users):
+    case static_cast<quint8>(protocol::MessageType::online_users):
         handleOnlineUsersBody(body);
+        break;
+    case static_cast<quint8>(protocol::MessageType::history_result):
+        handleHistoryResultBody(body);
         break;
     default:
         emit serverError(QStringLiteral("收到未知消息类型"));
@@ -371,8 +410,10 @@ void ChatClient::handleAuthBody(const QByteArray& body) {
         m_socket.disconnectFromHost();
         return;
     }
-
     m_state = AuthState::authenticated;
+    if (!sendInitialHistoryQuery()) {
+        return;
+    }
     emit authSucceeded();
 }
 
@@ -422,8 +463,17 @@ void ChatClient::handleErrorBody(const QByteArray& body) {
     }
 
     const QJsonObject object = document.object();
+    const QJsonValue scope_value = object.value(QStringLiteral("scope"));
     const QString local_id = object.value("local_id").toString();
     const QString reason = object.value("message").toString(QStringLiteral("服务器返回错误"));
+
+    if (scope_value.isString() &&scope_value.toString() == QStringLiteral("history"))
+    {
+        clearPendingHistoryRequest();
+        emit serverError(reason);
+        return;
+    }
+
     if (!local_id.isEmpty()) {
         emit chatSendFailed(makeMessageStateUpdate(local_id, ChatMessageStatus::Failed, reason));
         return;
@@ -434,7 +484,6 @@ void ChatClient::handleErrorBody(const QByteArray& body) {
         m_socket.disconnectFromHost();
         return;
     }
-
     emit serverError(reason);
 }
 
@@ -544,6 +593,150 @@ void ChatClient::handleOnlineUsersBody(const QByteArray &body)
     emit onlineUsersChanged(users);
 }
 
+void ChatClient::handleHistoryResultBody(const QByteArray &body) {
+
+    // 发生“当前查询内部错误”时，丢弃已收到的半页，避免向 UI 暴露不完整历史。
+    const auto fail_current_history = [this](const QString& reason) {
+        clearPendingHistoryRequest();
+        emit serverError(reason);
+    };
+
+    //JSON 必须是对象
+    QJsonParseError parse_error;
+    const auto document = QJsonDocument::fromJson(body, &parse_error);
+    if (parse_error.error != QJsonParseError::NoError || !document.isObject()) {
+        fail_current_history(QStringLiteral("历史响应 JSON 格式错误"));
+        return;
+    }
+    const auto object = document.object();
+
+    // 2. 先验证并关联 request_id；无法关联的响应只报告，不能取消仍在等待的合法请求。
+    const auto request_id_value = object.value("request_id");
+    if (!request_id_value.isString() || request_id_value.toString().isEmpty()) {
+        emit serverError(QStringLiteral("历史响应缺少 request_id"));
+        return;
+    }
+    const QString request_id = request_id_value.toString();
+    if (m_active_history_request_id.isEmpty() || request_id != m_active_history_request_id) {
+        emit serverError(QStringLiteral("没有对应请求的历史相应或历史响应 request_id 与当前请求不匹配"));
+        return;
+    }
+
+    // 3. 校验每个分块都必须具有的字段
+    const auto messages_value = object.value("messages");
+    const auto is_last_chunk_value = object.value("is_last_chunk");
+    if (!messages_value.isArray() || !is_last_chunk_value.isBool()) {
+        fail_current_history(QStringLiteral("历史响应分块字段错误"));
+        return;
+    }
+    const QJsonArray messages_array = messages_value.toArray();
+    const bool is_last_chunk = is_last_chunk_value.toBool();
+
+    if (!is_last_chunk && messages_array.isEmpty()) {
+        fail_current_history(QStringLiteral("非最终历史分块不能为空"));
+        return;
+    }
+
+    // 4. 先把本块的每条消息全部验证并转换成功，再追加到总暂存区。
+    QList<ChatMessage> chunk_messages;
+    bool has_more = false;
+    for (const QJsonValue& message_value : messages_array) {
+        if (!message_value.isObject()) {
+            fail_current_history(QStringLiteral("历史消息必须是对象"));
+            return;
+        }
+        const auto message_object = message_value.toObject();
+        const auto message_id_value = message_object.value(QStringLiteral("message_id"));
+        const auto local_id_value = message_object.value(QStringLiteral("local_id"));
+        const auto from_value = message_object.value(QStringLiteral("from"));
+        const auto to_value = message_object.value(QStringLiteral("to"));
+        const auto content_value = message_object.value(QStringLiteral("content"));
+        const auto send_at_value = message_object.value(QStringLiteral("send_at"));
+        const auto server_received_at_value = message_object.value(QStringLiteral("server_received_at_ms"));
+
+        if (!message_id_value.isString() || message_id_value.toString().isEmpty() ||
+            !local_id_value.isString() || local_id_value.toString().isEmpty() ||
+            !from_value.isString() || from_value.toString().isEmpty() ||
+            !to_value.isString() || to_value.toString().isEmpty() ||
+             !content_value.isString() || content_value.toString().isEmpty() ||
+            !send_at_value.isString() || send_at_value.toString().isEmpty() ||
+            !server_received_at_value.isDouble())
+        {
+            fail_current_history(QStringLiteral("历史消息缺少必要字段"));
+            return;
+        }
+        const QDateTime send_at = QDateTime::fromString(send_at_value.toString(), Qt::ISODate);
+        if (!send_at.isValid()) {
+            fail_current_history(QStringLiteral("历史消息时间字段错误"));
+            return;
+        }
+
+        const qint64 server_received_at = server_received_at_value.toInteger(-1);
+        if (server_received_at < 0 ||
+            server_received_at_value.toDouble() != static_cast<double>(server_received_at))
+        {
+            fail_current_history(QStringLiteral("历史消息服务端时间字段错误"));
+            return;
+        }
+        chunk_messages.append(makeReceivedChatMessage(message_object));
+    }
+
+        // 5. 非最终块不能携带翻页结论。
+        if (!is_last_chunk) {
+            if (object.contains(QStringLiteral("has_more")) ||
+                object.contains(QStringLiteral("next_cursor"))) {
+                fail_current_history(QStringLiteral("非最终历史分块不应包含翻页结果"));
+                return;
+                }
+        }// 6. 最终块必须完整给出 has_more 和 next_cursor。
+        else {
+            const auto has_more_value = object.value(QStringLiteral("has_more"));
+            const auto next_cursor_value = object.value(QStringLiteral("next_cursor"));
+
+            if (!object.contains(QStringLiteral("has_more")) ||!has_more_value.isBool() ||
+                !object.contains(QStringLiteral("next_cursor"))) {
+                fail_current_history(QStringLiteral("最终历史分块缺少翻页结果"));
+                return;
+                }
+            has_more =has_more_value.toBool();
+            //只有确认 has_more == true，才能读取游标对象内部字段
+            if (!has_more) {
+                if (!next_cursor_value.isNull()) {
+                    fail_current_history(QStringLiteral("无下一页时游标必须为 null"));
+                    return;
+                }
+            }else {
+                if (!next_cursor_value.isObject()) {
+                    fail_current_history(QStringLiteral("下一页游标字段错误"));
+                    return;
+                }
+                const auto cursor_object = next_cursor_value.toObject();
+                const auto timestamp_value = cursor_object.value(QStringLiteral("server_received_at_ms"));
+                const auto cursor_message_id_value = cursor_object.value(QStringLiteral("message_id"));
+
+                const auto timestamp = timestamp_value.toInteger(-1);
+                if (!timestamp_value.isDouble() || timestamp < 0 ||
+                    timestamp_value.toDouble() != static_cast<double>(timestamp) ||
+                    !cursor_message_id_value.isString() || cursor_message_id_value.toString().isEmpty()) {
+                    fail_current_history(QStringLiteral("下一页游标内容错误"));
+                    return;
+                }
+            }
+        }
+    if (m_pending_history_messages.size() + chunk_messages.size() > kInitialHistoryLimit) {
+        fail_current_history(QStringLiteral("历史响应消息数量超过首屏上限"));
+        return;
+    }
+    // 7. 到这里才允许提交本块；最终块再一次性发给上层。
+    m_pending_history_messages.append(chunk_messages);
+    if (!is_last_chunk) {
+        return;
+    }
+    const auto completed_messages = m_pending_history_messages;
+    clearPendingHistoryRequest();
+    emit historyPageReceived(completed_messages,has_more);
+}
+
 // 功能：清空已失效的在线快照；仅在状态变化时发送空快照通知。
 void ChatClient::clearOnlineUsers()
 {
@@ -553,4 +746,10 @@ void ChatClient::clearOnlineUsers()
 
     m_online_users.clear();
     emit onlineUsersChanged({});
+}
+
+// 功能：清空当前的待处理历史请求。
+void ChatClient::clearPendingHistoryRequest() {
+    m_pending_history_messages.clear();
+    m_active_history_request_id.clear();
 }

@@ -254,6 +254,16 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_order
 - 验证：`cmake --build cmake-build-debug --parallel 2` 成功；`ctest --test-dir cmake-build-debug --output-on-failure` 为 3/3 通过。
 - 剩余缺口：认证后的端到端网络历史查询仍依赖可注入的 JWT 测试配置；B3 已完成服务端实现，下一步进入 C1，由 Qt 客户端在认证成功后请求并解析历史响应。
 
+#### 2026-08-17｜W9-3 / C1：Qt 历史首屏请求与分块聚合（已完成）
+
+- `ChatClient` 在 type=5 认证成功后生成 `request_id`，发送固定 `limit=50` 的 type=9 `history_query`；请求状态在写帧成功后保留，失败、重连、断开、超时、非法帧和 `scope=history` 错误时统一清理。
+- type=10 `history_result` 先按 `request_id` 关联：缺失、空或不匹配的 ID 只报告错误，不能取消仍在等待的合法请求；仅已确认匹配当前 ID 的正文/字段错误才丢弃已暂存半页。
+- 客户端严格校验消息必填字段、ISO 时间、非负整毫秒服务端时间、分块字段和最终翻页字段；每块先完整转换为临时列表，再在累计不超过 50 条后提交。仅最终块复制完整列表、清理请求状态并发射 `historyPageReceived`，不触及 UI 合并或送达回执。
+- 修复帧长度解码：四个长度字节各自先转换为 `quint32` 再左移，避免损坏帧的有符号左移未定义行为。
+- 新增 `history_client_test`：本地 TCP 对端验证认证后请求、`request_id/limit`、无 `request_id` 的响应不取消有效请求、非最终块不提前发射、`ping/pong` 因果同步，以及最终块一次性交付两条 `Received` 历史消息。
+- 验证：`cmake --build cmake-build-debug --parallel 2` 成功；`ctest --test-dir cmake-build-debug --output-on-failure` 为 4/4 通过；C1 范围六维 Qt 审查无未解决高置信问题。
+- 剩余缺口：C2 负责把 `historyPageReceived` 的完整页面按 `message_id` 去重、按会话合并并正序渲染到 `MainWindow`；本步不改 UI。
+
 ---
 
 ## 八、验收矩阵
