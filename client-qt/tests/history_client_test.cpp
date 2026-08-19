@@ -4,6 +4,7 @@
 
 #include <QCoreApplication>
 #include <QDeadlineTimer>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -106,6 +107,83 @@ QJsonObject makeHistoryMessage(const QString& message_id, const QString& local_i
     return message;
 }
 
+// 功能：服务端保持连接但不返回认证结果时，客户端应在认证等待超时后只报告一次认证失败。
+bool testAuthenticationResponseTimeout()
+{
+    QTcpServer server;
+    if (!server.listen(QHostAddress::LocalHost, 9000)) {
+        std::cerr << "无法监听客户端固定测试端口 9000："
+                  << server.errorString().toStdString() << '\n';
+        return false;
+    }
+
+    QTcpSocket* peer = nullptr;
+    QByteArray peer_buffer;
+    QObject peer_owner;
+    int auth_frame_count = 0;
+    QElapsedTimer auth_frame_timer;
+    QObject::connect(&server, &QTcpServer::newConnection, &server, [&] {
+        peer = server.nextPendingConnection();
+        peer->setParent(&peer_owner);
+        QObject::connect(peer, &QTcpSocket::readyRead, peer, [&] {
+            peer_buffer.append(peer->readAll());
+
+            ReceivedFrame frame;
+            while (tryTakeFrame(peer_buffer, frame)) {
+                if (frame.type == static_cast<quint8>(protocol::MessageType::auth)) {
+                    ++auth_frame_count;
+                    auth_frame_timer.start();
+                }
+            }
+        });
+    });
+
+    ChatClient client;
+    int auth_failed_count = 0;
+    QString failure_reason;
+    QObject::connect(&client, &ChatClient::authFailed, &client,
+                     [&](const QString& reason) {
+                         ++auth_failed_count;
+                         failure_reason = reason;
+                     });
+
+    client.connectWithToken(QStringLiteral("test-token"));
+    if (!waitUntil([&] { return peer != nullptr; })) {
+        std::cerr << "客户端没有建立 TCP 连接\n";
+        return false;
+    }
+
+    if (!waitUntil([&] { return auth_frame_count == 1; }) || !auth_frame_timer.isValid()) {
+        std::cerr << "客户端没有先发送认证帧\n";
+        return false;
+    }
+
+    if (!waitUntil([&] { return auth_failed_count == 1; }, QDeadlineTimer(6500)) ||
+        failure_reason != QStringLiteral("等待 chat-server 认证响应超时") ||
+        client.isAuthenticated() || auth_frame_timer.elapsed() < 4500) {
+        std::cerr << "客户端没有按认证响应超时规则失败\n";
+        return false;
+    }
+
+    if (!waitUntil([&] {
+            return peer->state() == QAbstractSocket::UnconnectedState;
+        })) {
+        std::cerr << "认证超时后测试连接没有关闭\n";
+        return false;
+    }
+
+    const QDeadlineTimer duplicate_signal_deadline(150);
+    while (!duplicate_signal_deadline.hasExpired()) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QThread::msleep(1);
+    }
+    if (auth_failed_count != 1) {
+        std::cerr << "认证超时重复通知认证失败\n";
+        return false;
+    }
+    return true;
+}
+
 // 功能：验证实时 chat 和 chat_ack 都将服务端排序时间传递到客户端消息模型。
 bool testRealtimeMessageAndAckKeepServerReceivedTime()
 {
@@ -117,15 +195,21 @@ bool testRealtimeMessageAndAckKeepServerReceivedTime()
     }
 
     QTcpSocket* peer = nullptr;
+    QByteArray peer_buffer;
+    QObject peer_owner;
     QObject::connect(&server, &QTcpServer::newConnection, &server, [&] {
         peer = server.nextPendingConnection();
-        peer->setParent(&server);
+        peer->setParent(&peer_owner);
+        QObject::connect(peer, &QTcpSocket::readyRead, peer, [&] {
+            peer_buffer.append(peer->readAll());
+        });
     });
 
     ChatClient client;
     int server_error_count = 0;
     int received_count = 0;
     int accepted_count = 0;
+    int auth_succeeded_count = 0;
     ChatMessage received_message;
     ChatMessage accepted_update;
     QObject::connect(&client, &ChatClient::serverError, &client,
@@ -140,10 +224,29 @@ bool testRealtimeMessageAndAckKeepServerReceivedTime()
                          ++accepted_count;
                          accepted_update = update;
                      });
+    QObject::connect(&client, &ChatClient::authSucceeded, &client,
+                     [&] { ++auth_succeeded_count; });
 
     client.connectWithToken(QStringLiteral("test-token"));
     if (!waitUntil([&] { return peer != nullptr; })) {
         std::cerr << "客户端没有建立 TCP 连接\n";
+        return false;
+    }
+
+    ReceivedFrame auth_frame;
+    if (!waitUntil([&] { return tryTakeFrame(peer_buffer, auth_frame); }) ||
+        auth_frame.type != static_cast<quint8>(protocol::MessageType::auth)) {
+        std::cerr << "没有收到认证帧\n";
+        return false;
+    }
+
+    QJsonObject auth_result;
+    auth_result.insert(QStringLiteral("ok"), true);
+    peer->write(makeFrame(static_cast<quint8>(protocol::MessageType::auth), auth_result));
+    peer->flush();
+
+    if (!waitUntil([&] { return auth_succeeded_count == 1; })) {
+        std::cerr << "客户端没有完成认证\n";
         return false;
     }
 
@@ -196,6 +299,14 @@ bool testRealtimeMessageAndAckKeepServerReceivedTime()
         std::cerr << "非法 server_received_at_ms 没有被拒绝\n";
         return false;
     }
+
+    client.disconnectFromServer();
+    if (!waitUntil([&] {
+            return peer->state() == QAbstractSocket::UnconnectedState;
+        })) {
+        std::cerr << "客户端测试连接没有正常关闭\n";
+        return false;
+    }
     return true;
 }
 
@@ -211,10 +322,11 @@ bool testInitialHistoryQueryAndChunkAggregation()
 
     QTcpSocket* peer = nullptr;
     QByteArray peer_buffer;
+    QObject peer_owner;
     QObject::connect(&server, &QTcpServer::newConnection, &server, [&] {
         peer = server.nextPendingConnection();
-        peer->setParent(&server);
-        QObject::connect(peer, &QTcpSocket::readyRead, &server, [&] {
+        peer->setParent(&peer_owner);
+        QObject::connect(peer, &QTcpSocket::readyRead, peer, [&] {
             peer_buffer.append(peer->readAll());
         });
     });
@@ -351,6 +463,14 @@ bool testInitialHistoryQueryAndChunkAggregation()
         std::cerr << "历史页面信号被重复发射\n";
         return false;
     }
+
+    client.disconnectFromServer();
+    if (!waitUntil([&] {
+            return peer->state() == QAbstractSocket::UnconnectedState;
+        })) {
+        std::cerr << "客户端测试连接没有正常关闭\n";
+        return false;
+    }
     return true;
 }
 
@@ -359,9 +479,10 @@ bool testInitialHistoryQueryAndChunkAggregation()
 int main(int argc, char* argv[])
 {
     QCoreApplication application(argc, argv);
-    if (testRealtimeMessageAndAckKeepServerReceivedTime() &&
+    if (testAuthenticationResponseTimeout() &&
+        testRealtimeMessageAndAckKeepServerReceivedTime() &&
         testInitialHistoryQueryAndChunkAggregation()) {
-        std::cout << "PASS: realtime timestamps and initial history query\n";
+        std::cout << "PASS: auth timeout, realtime timestamps and initial history query\n";
         return 0;
     }
 

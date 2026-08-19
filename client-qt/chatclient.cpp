@@ -12,9 +12,12 @@
 // 功能：创建套接字和连接计时器，并完成所有内部信号槽连接。
 ChatClient::ChatClient(QObject* parent)
     : QObject(parent),
-      m_socket(this),
-      m_connect_timer(this) {
+        m_socket(this),
+        m_connect_timer(this),
+        m_auth_timer(this)
+{
     m_connect_timer.setSingleShot(true);
+    m_auth_timer.setSingleShot(true);
     connectSlots();
 }
 
@@ -27,6 +30,7 @@ void ChatClient::connectWithToken(const QString& token) {
         return;
     }
 
+    m_auth_timer.stop();
     clearPendingHistoryRequest();
 
     if (m_socket.state() != QAbstractSocket::UnconnectedState) {
@@ -46,6 +50,7 @@ void ChatClient::connectWithToken(const QString& token) {
 // 功能：停止连接超时检查，并请求 Socket 在已发送数据处理完成后正常断开。
 void ChatClient::disconnectFromServer() {
     m_connect_timer.stop();
+    m_auth_timer.stop();
     clearPendingHistoryRequest();
     m_state = AuthState::idle;
     clearOnlineUsers();
@@ -138,28 +143,41 @@ void ChatClient::onSocketReady() {
 
 // 功能：根据错误发生前的认证状态向界面发出连接失败、认证失败或断开通知。
 void ChatClient::onSocketError(const QAbstractSocket::SocketError socket_error) {
+
+    m_auth_timer.stop();
+
     if (socket_error == QAbstractSocket::RemoteHostClosedError) {
         return;
     }
 
     m_connect_timer.stop();
     const AuthState old_state = m_state;
+    const QString error_text = m_socket.errorString();
+
+    if (old_state == AuthState::waitingAuthResult) {
+        failAuthentication(QStringLiteral("认证连接异常：") + error_text);
+        return;
+    }
+
     m_state = AuthState::idle;
     clearPendingHistoryRequest();
     clearOnlineUsers();
+    m_received_buffer.clear();
 
-    if (old_state == AuthState::waitingAuthResult) {
-        emit authFailed("认证连接异常：" + m_socket.errorString());
-    } else if (old_state == AuthState::authenticated) {
+    // 先将旧连接的 disconnected 事件在 idle 状态中消耗，再通知界面，避免直接槽中的重连被旧事件误判。
+    m_socket.abort();
+
+    if (old_state == AuthState::authenticated) {
         emit disconnected();
-    } else {
-        emit connectionFailed(m_socket.errorString());
+    } else if (old_state == AuthState::connecting) {
+        emit connectionFailed(error_text);
     }
 }
 
 // 功能：根据断开前状态通知认证失败、连接建立前断开或已认证连接断开。
 void ChatClient::onSocketDisconnected() {
     m_connect_timer.stop();
+    m_auth_timer.stop();
     const AuthState old_state = m_state;
     m_state = AuthState::idle;
     clearPendingHistoryRequest();
@@ -193,6 +211,24 @@ void ChatClient::connectSlots() {
                 m_state = AuthState::idle;
                 emit connectionFailed("连接 chat-server 超时");
             });
+
+    connect(&m_auth_timer, &QTimer::timeout, this,
+            [this] {
+                if (m_state != AuthState::waitingAuthResult) {
+                    return;
+                }
+                failAuthentication(QStringLiteral("等待 chat-server 认证响应超时"));
+            });
+}
+
+void ChatClient::failAuthentication(const QString& reason) {
+    m_auth_timer.stop();
+    m_state = AuthState::idle;
+    clearPendingHistoryRequest();
+    clearOnlineUsers();
+    m_received_buffer.clear();
+    m_socket.abort();
+    emit authFailed(reason);
 }
 
 // 功能：将接收到的 JSON 对象转换为 ChatMessage 对象。
@@ -274,12 +310,12 @@ void ChatClient::sendAuthFrame() {
     const QByteArray body = m_token.toUtf8();
     QString error;
     if (!writeFrame(static_cast<quint8>(protocol::MessageType::auth), body, error)) {
-        m_state = AuthState::idle;
-        emit authFailed(QStringLiteral("认证帧发送失败：") + error);
+        failAuthentication(QStringLiteral("认证帧发送失败：") + error);
         return;
     }
 
     m_state = AuthState::waitingAuthResult;
+    m_auth_timer.start(kAuthenticationTimeout);
     emit authFrameSent();
 }
 
@@ -339,10 +375,25 @@ void ChatClient::processReceivedFrames() {
             !protocol::isKnownMessageType(type) ||
             body_length > protocol::kMaxFrameBodyLength)
         {
+            const AuthState old_state = m_state;
+
+            if (old_state == AuthState::waitingAuthResult) {
+                failAuthentication(QStringLiteral("收到非法聊天协议帧"));
+                return;
+            }
+
+            m_auth_timer.stop();
             clearPendingHistoryRequest();
+            clearOnlineUsers();
+            m_received_buffer.clear();
             m_state = AuthState::idle;
-            emit authFailed("收到非法聊天协议帧");
-            m_socket.disconnectFromHost();
+            m_socket.abort();
+
+            if (old_state == AuthState::authenticated) {
+                emit serverError(QStringLiteral("收到非法聊天协议帧"));
+                emit disconnected();
+            }
+
             return;
         }
 
@@ -361,6 +412,18 @@ void ChatClient::processReceivedFrames() {
 
 // 功能：按协议消息类型分派正文，避免将认证和心跳正文错误当作聊天 JSON 解析。
 void ChatClient::dispatchFrame(const quint8 type, const QByteArray& body) {
+    if (m_state == AuthState::idle || m_state == AuthState::connecting) {
+        m_received_buffer.clear();
+        return;
+    }
+
+    if (m_state == AuthState::waitingAuthResult &&
+        type != static_cast<quint8>(protocol::MessageType::auth) &&
+        type != static_cast<quint8>(protocol::MessageType::error)) {
+        failAuthentication(QStringLiteral("认证阶段收到非法聊天协议帧"));
+        return;
+    }
+
     switch (type) {
     case static_cast<quint8>(protocol::MessageType::auth):
         handleAuthBody(body);
@@ -403,13 +466,13 @@ void ChatClient::handleAuthBody(const QByteArray& body) {
         return;
     }
 
+    m_auth_timer.stop();
+
     QJsonParseError parse_error;
     const QJsonDocument document = QJsonDocument::fromJson(body, &parse_error);
     if (parse_error.error != QJsonParseError::NoError || !document.isObject() ||
         !document.object().value("ok").toBool()) {
-        m_state = AuthState::idle;
-        emit authFailed(QStringLiteral("认证响应格式错误"));
-        m_socket.disconnectFromHost();
+        failAuthentication(QStringLiteral("认证响应格式错误"));
         return;
     }
     m_state = AuthState::authenticated;
@@ -468,6 +531,20 @@ void ChatClient::handleChatBody(const QByteArray& body) {
 void ChatClient::handleErrorBody(const QByteArray& body) {
     QJsonParseError parse_error;
     const QJsonDocument document = QJsonDocument::fromJson(body, &parse_error);
+    const bool is_valid_error =
+        parse_error.error == QJsonParseError::NoError &&
+        document.isObject();
+
+    if (m_state == AuthState::waitingAuthResult)
+    {
+        const QString reason = is_valid_error ?
+        document.object().value("message").toString(QStringLiteral("服务器返回错误")) :
+        QStringLiteral("认证错误响应格式错误");
+
+        failAuthentication(reason);
+        return;
+    }
+
     if (parse_error.error != QJsonParseError::NoError || !document.isObject()) {
         emit serverError(QString::fromUtf8(body));
         return;
@@ -489,12 +566,7 @@ void ChatClient::handleErrorBody(const QByteArray& body) {
         emit chatSendFailed(makeMessageStateUpdate(local_id, ChatMessageStatus::Failed, reason));
         return;
     }
-    if (m_state == AuthState::waitingAuthResult) {
-        m_state = AuthState::idle;
-        emit authFailed(reason);
-        m_socket.disconnectFromHost();
-        return;
-    }
+
     emit serverError(reason);
 }
 

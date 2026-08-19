@@ -9,6 +9,7 @@
 #include <QTcpSocket>
 #include <QTimer>
 #include <QStringList>
+#include <chrono>
 class ChatClient : public QObject {
     Q_OBJECT
 
@@ -107,9 +108,15 @@ private:
     // 功能：限制首次历史查询及其响应累计的最大消息条数。
     static constexpr int kInitialHistoryLimit = 50;
 
+    //只限制 waitingAuthResult 阶段，不能用于 TCP 建连阶段
+    static constexpr auto kAuthenticationTimeout = std::chrono::milliseconds{5000};
+
     // ==================== 模块：初始化与连接辅助 ====================
     // 功能：绑定 Socket、连接计时器的 Qt 信号与本类事件处理函数。
     void connectSlots();
+
+    // 功能：以一致顺序结束认证：先停止计时器和清理旧会话，再中止连接，最后通知界面。
+    void failAuthentication(const QString& reason);
 
     // 功能：将接收到的 JSON 聊天消息转换为 ChatMessage 对象。
     static ChatMessage makeReceivedChatMessage(const QJsonObject &object);
@@ -197,6 +204,9 @@ private:
 
     // 功能：保存当前连接和认证阶段，供事件处理函数决定错误通知类型。
     AuthState m_state{AuthState::idle};
+
+    // 功能：限制认证阶段的最长等待时间。
+    QTimer m_auth_timer;
 
     // 功能：缓存最后一份有效在线用户快照，供晚创建的主窗口主动回填。
     QStringList m_online_users;
