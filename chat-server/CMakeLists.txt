@@ -111,3 +111,22 @@ target_include_directories(jwt_demo PRIVATE
 target_link_libraries(jwt_demo PRIVATE
     OpenSSL::Crypto
 )
+
+add_executable(online_users_integration_test
+        examples/online_users_integration_test.cpp
+        src/net/server.cpp
+        src/net/session.cpp
+        src/protocol/frame_decoder.cpp
+        src/protocol/chat_payload.cpp
+        src/repository/message_repository.cpp
+)
+configure_chat_server_target(online_users_integration_test)
+target_include_directories(online_users_integration_test PRIVATE
+        ${JWT_INCLUDE_DIR}
+)
+target_link_libraries(online_users_integration_test PRIVATE
+        ${CHAT_SERVER_NETWORK_LIBRARIES}
+        OpenSSL::Crypto
+        SQLite3::SQLite3
+)
+register_chat_server_test(online_users_integration_test)

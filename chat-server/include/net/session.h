@@ -5,6 +5,7 @@
 #include <asio.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -38,17 +39,22 @@ using MessageCallback = std::function<void(SessionId, protocol::Message)>;
 // 功能：定义会话断开后通知 Server 清理在线表时使用的回调类型。
 using DisconnectCallback = std::function<void(const SessionId)>;
 
-// 功能：定义会话认证成功后通知 Server 登记用户名时使用的回调类型。
-using AuthenticatedCallback = std::function<void(SessionId, const std::string&)>;
+// 功能：定义会话请求认证时通知 Server 的回调类型。
+using AuthenticationRequestedCallback = std::function<void(SessionId, const std::string&)>;
+
+
+// 功能：通知 Server 认证截止已到；由 Server strand 裁决超时拒绝或已准入忽略。
+using AuthenticationTimeoutCallback = std::function<void(SessionId)>;
 
 // ==================== 模块：单个 TCP 会话 ====================
 class Session : public std::enable_shared_from_this<Session> {
 public:
     // ==================== 模块：生命周期与对外发送 ====================
-    // 功能：接管已接受的 Socket，并保存消息、断开和认证成功回调。
+    // 功能：接管已接受的 Socket，并保存消息、断开和认证准入请求回调。
     Session(asio::ip::tcp::socket socket, SessionId session_id,
             MessageCallback on_message, DisconnectCallback on_disconnect,
-            AuthenticatedCallback on_authenticated);
+            AuthenticationRequestedCallback on_authentication_requested,
+            AuthenticationTimeoutCallback on_authentication_timeout);
 
     // 功能：将首个异步读取任务投递到本会话 strand，开始处理客户端字节流。
     void start();
@@ -64,7 +70,23 @@ public:
     // 功能：Server 可调用；它只把关闭任务 asio::post 到 m_strand
     void requestClose();
 
+    // 功能：仅由 Server 在在线准入成功后调用；提交已确认的认证状态，
+    //       再按 auth.ok、online_users 的顺序将两帧加入写队列。
+    void completeAuthentication(std::string username,std::string online_users_body);
+
+    // 功能：仅由 Server 在在线准入拒绝后调用；先发送已序列化的错误帧，
+    //       再在当前写队列排空后关闭连接，避免客户端收不到错误原因。
+    void rejectAuthentication(std::string error_body);
+
 private:
+
+    void startAuthenticationDeadlineOnStrand();
+
+    void cancelAuthenticationDeadlineOnStrand();
+
+    void handleAuthenticationDeadlineOnStrand(const std::error_code& error);
+
+    static constexpr auto kAuthenticationTimeout = std::chrono::seconds{5};
     // ==================== 模块：异步读取与帧解码 ====================
     // 功能：异步读取 Socket 字节，交给帧解码器处理后继续安排下一次读取。
     // 失败：读取或协议解码失败时关闭会话并通知 Server 清理在线记录。
@@ -72,21 +94,32 @@ private:
 
     // ==================== 模块：串行写队列 ====================
     // 功能：校验正文长度、编码帧并压入写队列，必要时启动首个异步写操作。
-    void enqueueAndWrite(protocol::MessageType type, const std::string& body);
+    void enqueueAndWrite(protocol::MessageType type, const std::string& body,
+                         bool allow_terminal_overflow = false);
 
-    // 功能：写出队首帧，完成后移除队首并继续写剩余帧。
+    // 功能：写出队首帧，完成后移除队首并继续写剩余帧；若队列排空且标记关闭，
+    //       则在最后一帧写完后关闭连接。
     void writeFrame();
 
     // 功能：仅在通用写队列为空时，将下一块历史正文交给通用写队列发送。
     void startNextHistoryResultBody();
 
     // ==================== 模块：认证与业务消息分派 ====================
+    enum class JwtVerificationResult {
+        accepted,
+        invalid_token,
+        invalid_username_claim
+    };
     // 功能：验证令牌并提取用户名，供认证阶段更新会话身份。
-    static bool verifyJwt(const std::string& token, std::string& out_username);
+    static JwtVerificationResult verifyJwt(const std::string &token, std::string &out_username);
 
     // 功能：构造包含 local_id 的聊天错误 JSON，供客户端定位失败气泡。
     static std::string makeChatError(const std::string& local_id,
                                      const std::string& code,
+                                     const std::string& message);
+
+
+    static std::string makeAuthError(const std::string& code,
                                      const std::string& message);
 
     // 功能：根据认证状态和消息类型处理认证、聊天、心跳及错误帧。
@@ -94,6 +127,9 @@ private:
 
     //
     static std::string makeHistoryError(const std::string& code,const std::string& message);
+
+    // 功能
+    void rejectAuthenticationOnStrand(std::string error_body);
 
     // ==================== 模块：关闭与日志 ====================
     // 功能：幂等地标记会话断开，并通知 Server 从在线表中移除当前会话。
@@ -114,6 +150,8 @@ private:
     asio::strand<asio::any_io_executor> m_strand;
 
 
+    asio::steady_timer m_authentication_timer;
+
     // 功能：缓存半包和粘包并还原完整协议帧。
     protocol::FrameDecoder m_decoder;
 
@@ -126,6 +164,9 @@ private:
 
     // 功能：保存尚未实际写出的历史响应正文；队首永远是下一块。
     std::deque<std::string> m_pending_history_result_bodies;
+
+    // 功能：标记当前写队列排空后应关闭连接；用于认证准入拒绝的 error 帧收尾。
+    bool m_close_after_write{false};
 
     // ==================== 模块：会话生命周期状态 ====================
     // 功能：防止同一会话重复触发断开回调。
@@ -141,12 +182,17 @@ private:
     // 功能：保存会话关闭时通知 Server 的回调。
     DisconnectCallback m_on_disconnect;
 
-    // 功能：保存令牌认证成功时通知 Server 的回调。
-    AuthenticatedCallback m_on_authenticated;
+    // 功能：JWT 与用户名合同通过后，请求 Server 决定是否允许进入在线用户集合。
+    AuthenticationRequestedCallback on_authentication_requested;
+
+    // 功能：将 Session strand 的认证截止事件投递回 Server strand 统一裁决。
+    AuthenticationTimeoutCallback m_on_authentication_timeout;
 
     // ==================== 模块：认证身份状态 ====================
     // 功能：记录当前 Socket 是否已通过令牌认证。
     bool m_authenticated{false};
+    // 功能：JWT 和用户名已验证，但 Server 尚未确认在线准入。
+    bool m_authentication_pending{false};
 
 
     // 功能：保存认证成功后从令牌中提取的用户名。

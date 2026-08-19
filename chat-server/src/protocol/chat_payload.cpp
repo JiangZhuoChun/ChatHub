@@ -7,9 +7,10 @@
 #include <cctype>
 #include <limits>
 
+#include "protocol/chat_protocol.h"
+
 namespace {
 
-constexpr std::size_t kMaxChatContentBytes = 1024;
 constexpr std::size_t kMaxLocalIdLength = 64;
 constexpr std::size_t kMaxDeliveryReceiptMessageIdLength = 64;
 constexpr std::size_t kMaxSendAtLength = 64;
@@ -136,7 +137,7 @@ ChatPayloadResult parseChatPayload(const std::string_view body)
     if (isBlank(content_str)) {
         return {ChatPayloadError::blank_content, {}};
     }
-    if (content_str.size() > kMaxChatContentBytes) {
+    if (content_str.size() > protocol::kMaxChatContentBytes) {
         return {ChatPayloadError::content_too_long, {}};
     }
 

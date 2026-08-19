@@ -6,7 +6,7 @@
 #include <string>
 #include <unordered_map>
 #include <optional>
-
+#include <vector>
 namespace net {
 
 
@@ -68,13 +68,20 @@ private:
     void handleHistoryQuery(SessionId sender_id,const protocol::Message& message);
 
     // 功能：从认证用户名映射生成稳定排序的 online_users JSON 正文。
-    std::optional<std::string>  buildOnlineUsersBody();
+    std::optional<std::string>buildOnlineUsersBody(std::vector<std::string> usernames) const;
+
+    //完成候选计算、失败拒绝、成功提交和同名接管
+    void handleAuthenticationRequest(SessionId session_id, std::string username);
+
+
+    void handleAuthenticationTimeout(const SessionId session_id);
+
+    //只发送一份已经验证过的 JSON body，不再排序、不再序列化、不再做业务判断。
+    void sendOnlineUsersBody(const std::string& online_users_body,
+        std::optional<SessionId> excluded_session_id = std::nullopt);
 
     // 功能：向全部已认证且仍有效的会话推送完整在线用户快照。
     void broadcastOnlineUsers();
-
-    // 功能：登记认证会话；同名登录时让新会话接管映射并请求关闭旧会话。
-    void registerAuthenticatedSession(SessionId session_id, const std::string& username);
 
     // 功能：判断会话是否仍是指定用户名当前有效的认证会话。
     bool isCurrentAuthenticatedSession(SessionId session_id, const std::string& username) const;

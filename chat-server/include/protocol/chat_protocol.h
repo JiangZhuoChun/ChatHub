@@ -2,7 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
-
+#include <string_view>
 namespace protocol {
 
 // ==================== 模块：聊天帧公共定义 ====================
@@ -30,10 +30,34 @@ inline constexpr std::size_t kFrameHeaderLength = 8;
 inline constexpr std::size_t kMaxFrameBodyLength = 2048;
 // 纯文本 content 上限（客户端发送的正文 ≤ 此值）
 inline constexpr std::size_t kMaxChatContentBytes = 1024;
+
+inline constexpr std::size_t kMinUsernameBytes = 3;
+
+inline constexpr std::size_t kMaxUsernameBytes = 20;
+
+inline constexpr std::size_t kMaxOnlineUsersSnapshotCount = 88;
 // 功能：判断帧头中的原始 type 值是否属于当前协议支持的类型范围。
 constexpr bool isKnownMessageType(const std::uint8_t raw_type) {
     return raw_type >= static_cast<std::uint8_t>(MessageType::chat) &&
            raw_type <= static_cast<std::uint8_t>(MessageType::history_result);
 }
 
+
+constexpr bool isValidUsername(const std::string_view username) {
+    //长度必须在 3..20；
+    if (username.size() < kMinUsernameBytes || username.size() > kMaxUsernameBytes) {
+        return false;
+    }
+    //每个字符只能是 A-Z、a-z、0-9 或 _；
+    for (const char ch : username) {
+        const bool valid = (ch >= 'A' && ch <= 'Z') ||
+                           (ch >= 'a' && ch <= 'z') ||
+                           (ch >= '0' && ch <= '9') ||
+                           (ch == '_');
+        if (!valid) {
+            return false;
+        }
+    }
+    return true;
+}
 } // protocol 命名空间结束

@@ -653,36 +653,52 @@ void ChatClient::handleDeliveryReceiptBody(const QByteArray& body)
 // 功能：校验并缓存服务端在线用户快照，成功后通知界面整体刷新。
 void ChatClient::handleOnlineUsersBody(const QByteArray &body)
 {
+    const auto reject_snapshot = [this](const QString& reason) {
+        clearOnlineUsers();
+        emit serverError(reason);
+    };
+
     QJsonParseError parse_error;
     const auto document = QJsonDocument::fromJson(body,&parse_error);
+
     if (parse_error.error != QJsonParseError::NoError || !document.isObject()) {
-        emit serverError(QString::fromUtf8(body));
+        reject_snapshot(QStringLiteral("在线用户快照 JSON 格式错误"));
         return;
     }
+
     const QJsonObject object = document.object();
     const QJsonValue users_value = object.value(QStringLiteral("users"));
     if (!users_value.isArray()) {
-        emit serverError(QStringLiteral("在线用户列表字段错误"));
+        reject_snapshot(QStringLiteral("在线用户列表字段错误"));
         return;
     }
     QStringList users;
     //存储不重复的元素
     QSet<QString> seen_users;
     const QJsonArray users_array = users_value.toArray();
+
+    if (users_array.size() > static_cast<qsizetype>(protocol::kMaxOnlineUsersSnapshotCount)) {
+        reject_snapshot(QStringLiteral("在线用户列表超过人数上限"));
+        return;
+    }
+
     for (const QJsonValue& user_value : users_array)
     {
-        const QString username = user_value.toString().trimmed();
-        if (!user_value.isString() || username.isEmpty()) {
-            emit serverError(QStringLiteral("在线用户列表包含无效用户名"));
+        const QString username = user_value.toString();
+        const std::string username_utf8 = username.toUtf8().toStdString();
+
+        if (!user_value.isString() || !protocol::isValidUsername(username_utf8)) {
+            reject_snapshot(QStringLiteral("在线用户列表包含非法用户名"));
             return;
         }
         if (seen_users.contains(username)) {
-            emit serverError(QStringLiteral("在线用户列表包含重复用户名"));
+            reject_snapshot(QStringLiteral("在线用户列表包含重复用户名"));
             return;
         }
         seen_users.insert(username);
         users.append(username);
     }
+
     m_online_users = users;
     emit onlineUsersChanged(users);
 }

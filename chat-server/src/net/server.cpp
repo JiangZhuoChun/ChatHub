@@ -81,6 +81,23 @@ std::string makeHistoryResultBody(const std::string& request_id,const boost::jso
     return boost::json::serialize(object);
 }
 
+std::string makeOnlineUsersCapacityErrorBody() {
+    boost::json::object obj;
+    obj["scope"] = "online_users";
+    obj["code"] = "online_snapshot_capacity_exceeded";
+    obj["message"] = "在线用户快照容量已满";
+    obj["max_users"] = protocol::kMaxOnlineUsersSnapshotCount;
+    return boost::json::serialize(obj);
+}
+
+// 功能：构造认证截止的稳定错误正文，供 Server strand 决定拒绝后交给 Session 写出。
+std::string makeAuthenticationTimeoutErrorBody() {
+    boost::json::object obj;
+    obj["scope"] = "auth";
+    obj["code"] = "authentication_timeout";
+    obj["message"] = "认证超时";
+    return boost::json::serialize(obj);
+}
 } // 匿名命名空间结束
 
 namespace net {
@@ -151,20 +168,27 @@ void Server::doAccept() {
                     };
 
                     // 功能：将认证成功事件投递回 Server strand，登记用户名与会话映射。
-                    auto on_authenticated = [this](SessionId authenticated_session_id,
+                    auto on_authentication_requested = [this](SessionId session_id,
                                                    std::string username) {
-                        asio::post(
-                            m_strand,
+                        asio::post(m_strand,
                             // 功能: 注册已认证会话并广播在线用户列表。
-                            [this, authenticated_session_id, username = std::move(username)] {
-                                registerAuthenticatedSession(authenticated_session_id, username);
-                                broadcastOnlineUsers();
+                            [this, session_id, username = std::move(username)] {
+
+                                handleAuthenticationRequest(session_id,username);
+                            });
+                    };
+
+                    auto on_authentication_timeout = [this](const SessionId timed_out_session_id) {
+                        asio::post(m_strand,
+                            [this, timed_out_session_id] {
+                                handleAuthenticationTimeout(timed_out_session_id);
                             });
                     };
 
                     const auto session = std::make_shared<Session>(
                         std::move(m_pending_socket), session_id, std::move(on_message),
-                        std::move(on_disconnect), std::move(on_authenticated));
+                        std::move(on_disconnect), std::move(on_authentication_requested),
+                        std::move(on_authentication_timeout));
                     addSession(session_id, session);
                     session->start();
                 }
@@ -555,57 +579,120 @@ void Server::handleHistoryQuery(SessionId sender_id, const protocol::Message &me
 }
 
 // 功能：构建在线用户列表帧的 body 部分。
-std::optional<std::string> Server::buildOnlineUsersBody() {
-    std::vector<std::string> users;
-    for (const auto& it : m_username_to_session) {
-        const auto& username =it.first;
-        users.push_back(username);
-    }
-    std::sort(users.begin(),users.end());
-
-    boost::json::array array;
-    for (const auto& username : users) {
-        if (username.empty()) {
+std::optional<std::string> Server::buildOnlineUsersBody(std::vector<std::string> usernames) const {
+    //1.排序
+    std::sort(usernames.begin(), usernames.end());
+    //2.去重
+    usernames.erase(std::unique(usernames.begin(),usernames.end()),usernames.end());
+    //3.检查人数上限
+    if (usernames.size() > protocol::kMaxOnlineUsersSnapshotCount){return std::nullopt;}
+    //4.检验每个用户名
+    for (const auto& username : usernames) {
+        if (!protocol::isValidUsername(username)) {
             return std::nullopt;
         }
-        array.emplace_back(username);
     }
-    boost::json::object object;
-    object["users"] = std::move(array);
-    const auto& body =boost::json::serialize(object);
-    if (body.size() > protocol::kMaxFrameBodyLength) {
-        return std::nullopt;
+    //5.构造JSON
+    boost::json::array users;
+    users.reserve(usernames.size());
+
+    for (const auto& username : usernames) {
+        users.emplace_back(username);
     }
+    boost::json::object root;
+    root["users"] = std::move(users);
+    std::string body = boost::json::serialize(root);
+
+    // 检查实际序列化后的帧体长度
+    if (body.size() > protocol::kMaxFrameBodyLength) {return std::nullopt;}
+
     return body;
 }
+
+void Server::handleAuthenticationRequest(SessionId session_id, std::string username) {
+    const auto session_it = m_sessions.find(session_id);
+    //1. 找候选 Session 是否仍存在
+    if (session_it == m_sessions.end()){return;}
+    //2. 局部复制用户名列表
+    std::vector<std::string> candidate_usernames;
+    candidate_usernames.reserve(m_username_to_session.size() + 1);
+
+    for (const auto& [online_username,ignored_session_id] : m_username_to_session) {
+        //3. 加候选用户名
+        candidate_usernames.push_back(online_username);
+    }
+    candidate_usernames.push_back(username);
+    // 4.构造并验证 candidate_body
+    auto candidate_body = buildOnlineUsersBody(std::move(candidate_usernames));
+    //5. 失败则 rejectAuthentication 后 return
+    if (!candidate_body.has_value()) {
+        session_it->second->rejectAuthentication(makeOnlineUsersCapacityErrorBody());
+        return;
+    }
+    // 只从这里开始，才允许改真实在线映射。
+    //6. 记录旧同名 SessionId（如有）
+    std::optional<SessionId> old_session_id;
+    if (const auto old_it =  m_username_to_session.find(username);
+        old_it != m_username_to_session.end() && old_it->second != session_id)
+    {
+        old_session_id = old_it->second;
+    }
+    //7. 提交 username → session_id
+    //8. 提交 session_id → username
+    m_username_to_session.insert_or_assign(username,session_id);
+    m_session_to_username.insert_or_assign(session_id,username);
+    //9. 新 Session 入队 auth.ok → online_users
+    session_it->second->completeAuthentication(std::move(username),*candidate_body);
+    //10. 向既有 Session 发送同一份 body
+    sendOnlineUsersBody(*candidate_body,session_id);
+    //11. 请求旧同名 Session 关闭
+    if (old_session_id.has_value()) {
+        if (const auto old_session_it = m_sessions.find(*old_session_id);
+            old_session_it != m_sessions.end()) {
+            old_session_it->second->requestClose();
+        }
+    }
+}
+
+void Server::handleAuthenticationTimeout(const SessionId session_id) {
+    const auto session_it = m_sessions.find(session_id);
+    if (session_it == m_sessions.end()) {
+        return;
+    }
+    if (m_session_to_username.find(session_id) != m_session_to_username.end()) {
+        return;
+    }
+    session_it->second->rejectAuthentication(makeAuthenticationTimeoutErrorBody());
+}
+
+void Server::sendOnlineUsersBody(const std::string &online_users_body, std::optional<SessionId> excluded_session_id) {
+    for (const auto& [username,session_id] : m_username_to_session) {
+        if (excluded_session_id.has_value() && session_id == *excluded_session_id) {
+            continue;
+        }
+
+        if (const auto session_it = m_sessions.find(session_id);
+            session_it != m_sessions.end()) {
+            session_it->second->send(protocol::MessageType::online_users,online_users_body);
+        }
+    }
+}
+
 // 功能：广播在线用户列表。
 void Server::broadcastOnlineUsers() {
-    const auto body = buildOnlineUsersBody();
+    std::vector<std::string> usernames;
+    for (const auto& it : m_username_to_session) {
+        usernames.emplace_back(it.first);
+    }
+    const auto body = buildOnlineUsersBody(usernames);
     if (!body.has_value()) {
         std::cerr << "无正文信息" << std::endl;
         return;
     }
-    for (const auto& it : m_username_to_session) {
-        if (auto session_it = m_sessions.find(it.second); session_it != m_sessions.end()) {
-            session_it->second->send(protocol::MessageType::online_users, body.value());
-        }
-    }
-}
-// 功能：注册已认证会话。
-void Server::registerAuthenticatedSession(const SessionId session_id, const std::string &username) {
-    if (const auto& old_it = m_username_to_session.find(username);
-        old_it != m_username_to_session.end() && old_it->second != session_id)
-    {
-       if (const auto& session_it = m_sessions.find(old_it->second);
-           session_it != m_sessions.end())
-       {
-           session_it->second->requestClose();
-       }
-    }
 
-    m_username_to_session.insert_or_assign(username,session_id);
-    m_session_to_username.insert_or_assign(session_id,username);
+    sendOnlineUsersBody(*body);
 }
+
 // 功能：检查会话是否当前用户会话。
 bool Server::isCurrentAuthenticatedSession(const SessionId session_id, const std::string &username) const {
     const auto it = m_username_to_session.find(username);

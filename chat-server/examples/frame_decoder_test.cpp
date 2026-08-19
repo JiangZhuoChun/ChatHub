@@ -62,7 +62,7 @@ bool testInvalidMagic() {
 bool testMaxBodyLength() {
     protocol::FrameDecoder decoder;
     std::vector<protocol::Message> received;
-    const std::string body(2049, 'x');
+    const std::string body(protocol::kMaxFrameBodyLength + 1, 'x');
     const auto frame = protocol::makeFrame(protocol::MessageType::chat, body);
     const auto result = decoder.append(
         frame.data(), frame.size(),
@@ -71,6 +71,21 @@ bool testMaxBodyLength() {
             received.push_back(message);
         });
     return result == protocol::DecodeResult::message_too_large && received.empty();
+}
+
+// 功能：验证正文长度恰好等于协议上限时，解码器正常交付完整消息。
+bool testMaxBodyLengthAccepted() {
+    protocol::FrameDecoder decoder;
+    std::vector<protocol::Message> received;
+    const std::string body(protocol::kMaxFrameBodyLength, 'x');
+    const auto frame = protocol::makeFrame(protocol::MessageType::chat, body);
+    const auto result = decoder.append(
+        frame.data(), frame.size(),
+        [&received](const protocol::Message& message) {
+            received.push_back(message);
+        });
+    return result == protocol::DecodeResult::ok && received.size() == 1 &&
+           received[0].type == protocol::MessageType::chat && received[0].body == body;
 }
 
 // 功能：验证不同类型的收据载荷解析结果。
@@ -196,6 +211,84 @@ bool testHistoryQueryPayloadRejection() {
 
 }
 
+
+bool testUsernameContract() {
+    using namespace protocol;
+    if (!isValidUsername("abc")) {
+        return false;
+    }
+    if (!isValidUsername("A_1")) {
+        return false;
+    }
+    // 恰好 3 字节
+    if (!isValidUsername("abc")) {
+        return false;
+    }
+    // 恰好 20 字节
+    if (!isValidUsername("abcdefghijklmnopqrst")) {
+        return false;
+    }
+    // 非法：空
+    if (isValidUsername("")) {
+        return false;
+    }
+    // 非法：2 字节
+    if (isValidUsername("ab")) {
+        return false;
+    }
+    // 非法：21 字节
+    if (isValidUsername("abcdefghijklmnopqrstu")) {
+        return false;
+    }
+    // 非法字符：-
+    if (isValidUsername("ab-c")) {
+        return false;
+    }
+    // 空格不能 trim
+    if (isValidUsername("ab c")) {
+        return false;
+    }
+    // 任一非 ASCII 字节
+    const std::string non_ascii{'a','b',static_cast<char>(0x80)};
+    if (isValidUsername(non_ascii)){
+        return false;
+    }
+    return true;
+}
+
+
+bool testChatContentLengthBoundary()
+{
+    using namespace protocol;
+
+    const auto makeJson = [](std::string_view content) {
+        return std::string{
+            R"({"to":"Bob","local_id":"local-1","send_at":"123456","content":")"
+        } + std::string{content} + R"("})";
+    };
+
+    {
+        const std::string content(kMaxChatContentBytes, 'a');
+
+        const auto result = parseChatPayload(makeJson(content));
+
+        if (result.error != ChatPayloadError::none || result.content != content) {
+            return false;
+        }
+    }
+
+    {
+        const std::string content(kMaxChatContentBytes + 1, 'a');
+
+        const auto result = parseChatPayload(makeJson(content));
+
+        if (result.error != ChatPayloadError::content_too_long) {
+            return false;
+        }
+    }
+
+    return true;
+}
 // ==================== 模块：测试结果汇总 ====================
 // 功能：输出单个测试用例的通过或失败结果，并返回其布尔状态。
 bool runTest(const char* name, const bool passed) {
@@ -223,6 +316,9 @@ bool testAll() {
     if (!runTest("max body length", testMaxBodyLength())) {
         all_pass = false;
     }
+    if (!runTest("max body length accepted", testMaxBodyLengthAccepted())) {
+        all_pass = false;
+    }
     if (!runTest("delivery receipt payload", testDeliverReceiptPayload())) {
         all_pass = false;
     }
@@ -230,6 +326,12 @@ bool testAll() {
         all_pass = false;
     }
     if (!runTest("history query payload rejection", testHistoryQueryPayloadRejection())) {
+        all_pass = false;
+    }
+    if (!runTest("username contract", testUsernameContract())) {
+        all_pass = false;
+    }
+    if (!runTest("chat content length boundary", testChatContentLengthBoundary())) {
         all_pass = false;
     }
     return all_pass;

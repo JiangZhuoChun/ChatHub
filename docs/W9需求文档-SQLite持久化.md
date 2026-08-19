@@ -341,6 +341,14 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_order
 
 ---
 
+#### 2026-08-17｜W9 完成后复盘（回归通过）
+
+- 提交 `7ef872f` 推送后再次执行 `ctest --test-dir cmake-build-debug --output-on-failure`，结果仍为 5/5 通过；当前 Git 工作区无已跟踪的未提交改动，仅保留未跟踪的 `CMakeFiles/` 构建产物。
+- 三项真实故障及结论：历史分块循环直接 `send()` 会填满上限为 3 的通用写队列，改为 Session 按写完成逐块发送；Windows 上 Repository 未析构前不能删除临时 SQLite 文件，测试以作用域结束连接生命周期；数据库写失败错误码曾与需求不一致，统一为 `database_write_failed` 后再以打开失败和运行期锁故障验证。
+- 可迁移结论：持久化状态、网络合同与 UI 展示状态必须分别建模；每次故障修复必须同时证明受影响请求失败语义、无关连接存活，以及故障解除后的恢复路径。
+
+---
+
 ## 八、验收矩阵
 
 | 场景 | 可观察结果 |

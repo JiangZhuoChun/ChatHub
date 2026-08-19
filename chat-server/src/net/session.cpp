@@ -7,6 +7,7 @@
 #include <jwt-cpp/traits/kazuho-picojson/defaults.h>
 
 #include <iostream>
+#include <chrono>
 
 // ==================== 模块：令牌验证配置 ====================
 // 功能：保存当前开发环境用于验证 HS256 令牌的密钥。
@@ -18,13 +19,17 @@ namespace net {
 // 功能：接管 Socket，创建会话 strand，并保存由 Server 注入的三个回调。
 Session::Session(asio::ip::tcp::socket socket, SessionId session_id,
                  MessageCallback on_message, DisconnectCallback on_disconnect,
-                 AuthenticatedCallback on_authenticated)
+                 AuthenticationRequestedCallback on_authentication_requested,
+                 AuthenticationTimeoutCallback on_authentication_timeout)
     : m_socket(std::move(socket)),
       m_strand(m_socket.get_executor()),
+      m_authentication_timer(m_strand),
       m_on_message(std::move(on_message)),
       m_id(session_id),
       m_on_disconnect(std::move(on_disconnect)),
-      m_on_authenticated(std::move(on_authenticated)) {
+      on_authentication_requested(std::move(on_authentication_requested)),
+      m_on_authentication_timeout(std::move(on_authentication_timeout))
+{
 }
 
 // 功能：将第一次读取任务投递到会话 strand，确保异步回调开始前会话对象已被持有。
@@ -33,6 +38,8 @@ void Session::start() {
     asio::post(m_strand,
                // 功能：在会话串行执行器中启动持续读取流程。
                [self] {
+                   self->startAuthenticationDeadlineOnStrand();
+
                    self->doRead();
                });
 }
@@ -64,6 +71,95 @@ void Session::requestClose() {
     asio::post(m_strand, [self] {
         self->closeOnStrand();
     });
+}
+
+// 功能：接收 Server 已确认有效的用户名与在线快照，原子地完成本会话的认证发送序列。
+// 顺序：仅在认证待定时提交认证状态，并将 auth.ok 排在 online_users 之前入写队列。
+void Session::completeAuthentication(std::string username, std::string online_users_body) {
+    const auto self = shared_from_this();
+
+    asio::post(m_strand,[self, username = std::move(username),
+            online_users_body = std::move(online_users_body), this]() mutable
+        {
+           if (m_disconnected || !m_authentication_pending || m_close_after_write) {
+               return;
+           }
+            if (online_users_body.size() > protocol::kMaxFrameBodyLength) {
+                closeOnStrand();
+                return;
+            }
+
+            cancelAuthenticationDeadlineOnStrand();
+
+            m_username = std::move(username);
+            m_authenticated =true;
+            m_authentication_pending = false;
+            enqueueAndWrite(protocol::MessageType::auth, "{\"ok\":true}");
+            enqueueAndWrite(protocol::MessageType::online_users, online_users_body);
+        });
+
+}
+
+// 功能：接收 Server 已确认有效的拒绝错误正文，写完 error 帧后再关闭会话。
+// 边界：错误正文超过帧上限时保护性关闭；会话不再等待准入时直接忽略请求。
+void Session::rejectAuthentication(std::string error_body) {
+    const auto self = shared_from_this();
+    asio::post(m_strand,[self,error_body = std::move(error_body)]() mutable {
+        self->rejectAuthenticationOnStrand(std::move(error_body));
+    }) ;
+}
+
+void Session::startAuthenticationDeadlineOnStrand() {
+    m_authentication_timer.expires_after(kAuthenticationTimeout);
+
+    const auto self = shared_from_this();
+
+    m_authentication_timer.async_wait(
+        asio::bind_executor(m_strand,[self](const std::error_code& error) {
+            self->handleAuthenticationDeadlineOnStrand(error);
+        }));
+}
+
+void Session::cancelAuthenticationDeadlineOnStrand() {
+    m_authentication_timer.cancel();
+}
+
+void Session::handleAuthenticationDeadlineOnStrand(const std::error_code &error) {
+    // 定时器被主动取消，不是真正的认证超时
+    if (error == asio::error::operation_aborted) {
+        return;
+    }
+    if (error) {
+        log("认证截止计时器异常");
+        closeOnStrand();
+        return;
+    }
+
+    // Session 已经进入其他终态，不再处理认证超时
+    if (m_disconnected || m_authenticated || m_close_after_write) {
+        return;
+    }
+    // 保持“等待认证结论”状态，并把终态裁决交给 Server strand。
+    m_authentication_pending = true;
+
+    if (m_on_authentication_timeout) {
+        m_on_authentication_timeout(m_id);
+    }else {
+        closeOnStrand();
+    }
+}
+
+void Session::rejectAuthenticationOnStrand(std::string error_body) {
+    if (m_disconnected || !m_authentication_pending || m_close_after_write) {
+        return;
+    }
+    if (error_body.size() > protocol::kMaxFrameBodyLength) {
+        closeOnStrand();
+        return;
+    }
+    // 记录“这一批队列写完后要关闭”，但此刻不关，确保 error 帧先完成异步写入。
+    m_close_after_write = true;
+    enqueueAndWrite(protocol::MessageType::error, error_body, true);
 }
 
 // ==================== 模块：异步读取与帧解码 ====================
@@ -107,14 +203,15 @@ void Session::doRead() {
 
 // ==================== 模块：串行写队列 ====================
 // 功能：校验正文大小后将完整帧放入队列；空队列首次入队时启动异步写。
-void Session::enqueueAndWrite(const protocol::MessageType type, const std::string& body) {
+void Session::enqueueAndWrite(const protocol::MessageType type, const std::string& body,
+                              const bool allow_terminal_overflow) {
     if (body.size() > protocol::kMaxFrameBodyLength) {
         std::cerr << "错误：body长度超出限制" << std::endl;
         return;
     }
 
     const bool was_empty = m_write_queue.empty();
-    if (m_write_queue.size() >= kMaxWriteQueueSize) {
+    if (m_write_queue.size() >= kMaxWriteQueueSize && !allow_terminal_overflow) {
         std::cout << "错误：发送队列已满：" << m_write_queue.size() << "/"
                   << kMaxWriteQueueSize << "关闭慢客户端" << std::endl;
         closeOnStrand();
@@ -128,6 +225,7 @@ void Session::enqueueAndWrite(const protocol::MessageType type, const std::strin
 }
 
 // 功能：异步写出队首帧；写入成功后移除队首并继续处理剩余队列。
+//       若认证拒绝要求写完后关闭，则只在队列排空后执行关闭。
 // 失败：写入失败时关闭会话，避免继续向失效 Socket 发送数据。
 void Session::writeFrame() {
     if (m_write_queue.empty()) {
@@ -151,6 +249,11 @@ void Session::writeFrame() {
                 std::cout << "发送成功：" << bytes_transferred << "字节" << std::endl;
 
                 if (m_write_queue.empty()) {
+                    if (self->m_close_after_write) {
+                        // error 已写完且队列排空；此时才可关闭 Socket，不能截断错误帧。
+                        self->closeOnStrand();
+                        return;
+                    }
                     self->startNextHistoryResultBody();
                 }else {
                     self->writeFrame();
@@ -170,16 +273,30 @@ void Session::startNextHistoryResultBody() {
 // ==================== 模块：认证与业务消息分派 ====================
 // 功能：使用服务端密钥验证 HS256 令牌，并从载荷中提取用户名。
 // 失败：令牌解码、签名校验或用户名提取抛出异常时返回 false。
-bool Session::verifyJwt(const std::string& token, std::string& out_username) {
+ Session::JwtVerificationResult Session::verifyJwt(const std::string &token, std::string &out_username)
+{
     try {
         const auto decoded = jwt::decode(token);
         const auto verifier = jwt::verify().allow_algorithm(jwt::algorithm::hs256{SECRET_KEY});
         verifier.verify(decoded);
-        out_username = decoded.get_payload_claim("username").as_string();
-        return true;
+        try {
+            const auto username = decoded.get_payload_claim("username").as_string();
+
+            if (!protocol::isValidUsername(username)) {
+                return JwtVerificationResult::invalid_username_claim;
+            }
+            out_username = username;
+            return JwtVerificationResult::accepted;
+        }
+        catch (const std::exception&) {
+            return JwtVerificationResult::invalid_username_claim;
+        }
+
     } catch (const std::exception&) {
-        return false;
+        return JwtVerificationResult::invalid_token;
     }
+
+
 }
 
 // 功能：构造包含聊天错误范围、错误码、错误说明和可选 local_id 的 JSON 正文。
@@ -195,28 +312,67 @@ std::string Session::makeChatError(const std::string& local_id, const std::strin
     return boost::json::serialize(object);
 }
 
+std::string Session::makeAuthError(const std::string &code, const std::string &message) {
+    boost::json::object object;
+    object["scope"] = "auth";
+    object["code"] = code;
+    object["message"] = message;
+
+    return boost::json::serialize(object);
+}
+
 // 功能：在未认证时只处理认证帧；认证完成后分派聊天、心跳和错误帧。
+//       若拒绝错误正在发送，则不再处理任何新入站帧。
 // 失败：令牌无效、未认证发送业务帧或聊天正文校验失败时关闭会话或返回错误帧。
 void Session::handlerMessage(const protocol::Message& message) {
+    if (m_close_after_write) {
+        // 已决定发送拒绝错误并关闭；忽略后续入站帧，防止提前关闭而截断 error。
+        return;
+    }
+
+    if (m_authentication_pending) {
+        log("会话正在等待 Server 准入，忽略额外帧");
+        return;
+    }
+
     if (!m_authenticated)
     {
         if (message.type == protocol::MessageType::auth)
         {
             std::string username;
-            if (verifyJwt(message.body, username)) {
-                m_authenticated = true;
-                m_username = username;
-                send(protocol::MessageType::auth, R"({"ok":true})");
-                if (m_on_authenticated) {
-                    m_on_authenticated(m_id, m_username);
+            const auto verification = verifyJwt(message.body, username);
+            if (verification == JwtVerificationResult::accepted)
+            {
+                //是拒绝发送期间的生命周期状态：它不表示认证成功，
+                //而是阻止该连接继续处理业务帧，直到 error 写完并关闭。
+                m_authentication_pending = true;
+
+                if (on_authentication_requested) {
+                    on_authentication_requested(m_id, username);
+                }else {
+                    closeOnStrand();
                 }
-            } else {
-                log("认证失败，关闭连接");
-                closeOnStrand();
+                return;
             }
+            if (verification == JwtVerificationResult::invalid_username_claim)
+            {
+                m_authentication_pending = true;
+                rejectAuthenticationOnStrand(makeAuthError("invalid_username_claim", "JWT 用户名不合法"));
+                return;
+            }
+            log("认证失败，关闭连接");
+            closeOnStrand();
+            return;
         }
 
-        else if (message.type == protocol::MessageType::history_query)
+        // 心跳不是认证行为：忽略它但不重置认证截止。
+        if (message.type == protocol::MessageType::ping ||
+            message.type == protocol::MessageType::pong) {
+            log("未认证会话心跳被忽略");
+            return;
+        }
+
+        if (message.type == protocol::MessageType::history_query)
         {
             send(protocol::MessageType::error,
                 makeHistoryError("authentication_required","历史查询需要先完成认证"));
@@ -437,6 +593,9 @@ void Session::closeOnStrand() {
         return;
     }
     m_disconnected = true;
+
+    cancelAuthenticationDeadlineOnStrand();
+
     //优雅地关闭 socket
     std::error_code ignored_error;
     m_socket.shutdown(asio::ip::tcp::socket::shutdown_both, ignored_error);
