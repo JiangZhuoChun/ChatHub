@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -530,6 +531,418 @@ bool testAuthenticatedSessionCancelsDeadline() {
     }
 }
 
+// 功能：验证三名已认证用户连续私聊时，chat、chat_ack、delivery_receipt 和心跳均保持各自会话边界。
+bool testThreeAccountRelay() {
+    try {
+        ScopedTestDirectory test_directory;
+        ServerFixture server;
+        asio::io_context client_io;
+
+        auto alice = connectClient(client_io, server.port());
+        if (!authenticateAndReceiveSnapshot(alice, "alice", {"alice"})) {
+            return false;
+        }
+
+        auto bob = connectClient(client_io, server.port());
+        if (!authenticateAndReceiveSnapshot(bob, "bob", {"alice", "bob"}) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(alice, 2s), {"alice", "bob"})) {
+            return false;
+        }
+
+        auto carol = connectClient(client_io, server.port());
+        const std::vector<std::string> three_users{"alice", "bob", "carol"};
+        if (!authenticateAndReceiveSnapshot(carol, "carol", three_users) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(alice, 2s), three_users) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(bob, 2s), three_users)) {
+            return false;
+        }
+
+        auto parseObject = [](const std::string& body, boost::json::object& object) {
+            boost::system::error_code error;
+            const auto value = boost::json::parse(body, error);
+            if (error || !value.is_object()) {
+                return false;
+            }
+            object = value.as_object();
+            return true;
+        };
+
+        auto readStringField = [](const boost::json::object& object, const char* name,
+                                  std::string& value) {
+            const auto* field = object.if_contains(name);
+            if (field == nullptr || !field->is_string()) {
+                return false;
+            }
+            value = field->as_string().c_str();
+            return true;
+        };
+
+        auto readPositiveTimestamp = [](const boost::json::object& object, const char* name,
+                                        std::int64_t& timestamp) {
+            const auto* field = object.if_contains(name);
+            if (field == nullptr) {
+                return false;
+            }
+            if (field->is_int64()) {
+                timestamp = field->as_int64();
+            } else if (field->is_uint64() &&
+                       field->as_uint64() <=
+                           static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                timestamp = static_cast<std::int64_t>(field->as_uint64());
+            } else {
+                return false;
+            }
+            return timestamp > 0;
+        };
+
+        auto expectJsonFrame = [&](tcp::socket& socket, const protocol::MessageType expected_type,
+                                   boost::json::object& object) {
+            const auto frame = readFrameWithDeadline(socket, 2s);
+            return frame.has_value() && frame->type == expected_type &&
+                   parseObject(frame->body, object);
+        };
+
+        std::vector<std::string> message_ids;
+        auto relayAndConfirm = [&](tcp::socket& sender, const std::string& sender_name,
+                                   tcp::socket& recipient, const std::string& recipient_name,
+                                   tcp::socket& observer, const std::string& local_id,
+                                   const std::string& content) {
+            const std::string send_at{"2026-08-19T12:00:00.000Z"};
+            boost::json::object request;
+            request["to"] = recipient_name;
+            request["content"] = content;
+            request["local_id"] = local_id;
+            request["send_at"] = send_at;
+            if (!sendFrameAndEnableNonBlocking(sender, protocol::MessageType::chat,
+                                                boost::json::serialize(request))) {
+                return false;
+            }
+
+            boost::json::object forwarded;
+            boost::json::object acknowledgement;
+            if (!expectJsonFrame(recipient, protocol::MessageType::chat, forwarded) ||
+                !expectJsonFrame(sender, protocol::MessageType::chat_ack, acknowledgement)) {
+                return false;
+            }
+
+            std::string message_id;
+            std::string acknowledgement_local_id;
+            std::string acknowledgement_status;
+            std::string forwarded_message_id;
+            std::string forwarded_local_id;
+            std::string forwarded_from;
+            std::string forwarded_to;
+            std::string forwarded_content;
+            std::string forwarded_send_at;
+            std::int64_t acknowledgement_received_at = 0;
+            std::int64_t forwarded_received_at = 0;
+            if (!readStringField(acknowledgement, "message_id", message_id) || message_id.empty() ||
+                !readStringField(acknowledgement, "local_id", acknowledgement_local_id) ||
+                !readStringField(acknowledgement, "status", acknowledgement_status) ||
+                !readPositiveTimestamp(acknowledgement, "server_received_at_ms",
+                                       acknowledgement_received_at) ||
+                !readStringField(forwarded, "message_id", forwarded_message_id) ||
+                !readStringField(forwarded, "local_id", forwarded_local_id) ||
+                !readStringField(forwarded, "from", forwarded_from) ||
+                !readStringField(forwarded, "to", forwarded_to) ||
+                !readStringField(forwarded, "content", forwarded_content) ||
+                !readStringField(forwarded, "send_at", forwarded_send_at) ||
+                !readPositiveTimestamp(forwarded, "server_received_at_ms", forwarded_received_at) ||
+                acknowledgement_local_id != local_id || acknowledgement_status != "accepted" ||
+                forwarded_message_id != message_id || forwarded_local_id != local_id ||
+                forwarded_from != sender_name || forwarded_to != recipient_name ||
+                forwarded_content != content || forwarded_send_at != send_at ||
+                forwarded_received_at != acknowledgement_received_at) {
+                return false;
+            }
+
+            // 第三名用户不是此消息的接收者，不得收到聊天、确认或其他残留协议帧。
+            if (readFrameWithDeadline(observer, 150ms).has_value()) {
+                return false;
+            }
+
+            boost::json::object receipt;
+            receipt["message_id"] = message_id;
+            if (!sendFrameAndEnableNonBlocking(recipient, protocol::MessageType::delivery_receipt,
+                                                boost::json::serialize(receipt))) {
+                return false;
+            }
+
+            boost::json::object delivered;
+            std::string delivered_local_id;
+            std::string delivered_status;
+            if (!expectJsonFrame(sender, protocol::MessageType::delivery_receipt, delivered) ||
+                !readStringField(delivered, "local_id", delivered_local_id) ||
+                !readStringField(delivered, "status", delivered_status) ||
+                delivered_local_id != local_id || delivered_status != "delivered") {
+                return false;
+            }
+
+            message_ids.push_back(message_id);
+            return true;
+        };
+
+        if (!relayAndConfirm(alice, "alice", bob, "bob", carol,
+                             "relay-alice-bob", "alice to bob") ||
+            !relayAndConfirm(bob, "bob", carol, "carol", alice,
+                             "relay-bob-carol", "bob to carol") ||
+            !relayAndConfirm(carol, "carol", alice, "alice", bob,
+                             "relay-carol-alice", "carol to alice") ||
+            message_ids.size() != 3 || message_ids[0] == message_ids[1] ||
+            message_ids[0] == message_ids[2] || message_ids[1] == message_ids[2]) {
+            return false;
+        }
+
+        auto expectPong = [&](tcp::socket& socket, const std::string& body) {
+            return sendFrameAndEnableNonBlocking(socket, protocol::MessageType::ping, body) &&
+                   [&] {
+                       const auto pong = readFrameWithDeadline(socket, 2s);
+                       return pong.has_value() && pong->type == protocol::MessageType::pong &&
+                              pong->body == body;
+                   }();
+        };
+
+        return expectPong(alice, "alice-alive") && expectPong(bob, "bob-alive") &&
+               expectPong(carol, "carol-alive");
+    } catch (const std::exception& error) {
+        std::cerr << "三账户连续消息测试异常：" << error.what() << '\n';
+        return false;
+    }
+}
+
+// 功能：验证三人在线期间同名接管只替换 alice 的会话，旧会话关闭后消息仍路由到新会话。
+bool testThreeAccountSameUsernameTakeover() {
+    try {
+        ScopedTestDirectory test_directory;
+        ServerFixture server;
+        asio::io_context client_io;
+        const std::vector<std::string> expected_users{"alice", "bob", "carol"};
+
+        auto old_alice = connectClient(client_io, server.port());
+        if (!authenticateAndReceiveSnapshot(old_alice, "alice", {"alice"})) {
+            return false;
+        }
+
+        auto bob = connectClient(client_io, server.port());
+        if (!authenticateAndReceiveSnapshot(bob, "bob", {"alice", "bob"}) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(old_alice, 2s), {"alice", "bob"})) {
+            return false;
+        }
+
+        auto carol = connectClient(client_io, server.port());
+        if (!authenticateAndReceiveSnapshot(carol, "carol", expected_users) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(old_alice, 2s), expected_users) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(bob, 2s), expected_users)) {
+            return false;
+        }
+
+        auto current_alice = connectClient(client_io, server.port());
+        if (!authenticateAndReceiveSnapshot(current_alice, "alice", expected_users) ||
+            !waitForSocketClosed(old_alice, 2s) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(bob, 2s), expected_users) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(carol, 2s), expected_users) ||
+            readFrameWithDeadline(bob, 150ms).has_value() ||
+            readFrameWithDeadline(carol, 150ms).has_value()) {
+            return false;
+        }
+
+        const std::string local_id{"takeover-bob-alice"};
+        boost::json::object request;
+        request["to"] = "alice";
+        request["content"] = "route to current alice";
+        request["local_id"] = local_id;
+        request["send_at"] = "2026-08-19T12:00:00.000Z";
+        if (!sendFrameAndEnableNonBlocking(bob, protocol::MessageType::chat,
+                                            boost::json::serialize(request))) {
+            return false;
+        }
+
+        const auto forwarded = readFrameWithDeadline(current_alice, 2s);
+        const auto acknowledgement = readFrameWithDeadline(bob, 2s);
+        if (!forwarded.has_value() || forwarded->type != protocol::MessageType::chat ||
+            !acknowledgement.has_value() ||
+            acknowledgement->type != protocol::MessageType::chat_ack) {
+            return false;
+        }
+
+        const auto forwarded_body = boost::json::parse(forwarded->body).as_object();
+        const auto acknowledgement_body = boost::json::parse(acknowledgement->body).as_object();
+        const auto* forwarded_from = forwarded_body.if_contains("from");
+        const auto* forwarded_to = forwarded_body.if_contains("to");
+        const auto* forwarded_content = forwarded_body.if_contains("content");
+        const auto* forwarded_local_id = forwarded_body.if_contains("local_id");
+        const auto* acknowledgement_local_id = acknowledgement_body.if_contains("local_id");
+        const auto* acknowledgement_status = acknowledgement_body.if_contains("status");
+        const auto* acknowledgement_message_id = acknowledgement_body.if_contains("message_id");
+        if (forwarded_from == nullptr || forwarded_to == nullptr || forwarded_content == nullptr ||
+            forwarded_local_id == nullptr || acknowledgement_local_id == nullptr ||
+            acknowledgement_status == nullptr || acknowledgement_message_id == nullptr ||
+            !forwarded_from->is_string() || !forwarded_to->is_string() ||
+            !forwarded_content->is_string() || !forwarded_local_id->is_string() ||
+            !acknowledgement_local_id->is_string() || !acknowledgement_status->is_string() ||
+            !acknowledgement_message_id->is_string() || forwarded_from->as_string() != "bob" ||
+            forwarded_to->as_string() != "alice" ||
+            forwarded_content->as_string() != "route to current alice" ||
+            forwarded_local_id->as_string() != local_id ||
+            acknowledgement_local_id->as_string() != local_id ||
+            acknowledgement_status->as_string() != "accepted" ||
+            acknowledgement_message_id->as_string().empty()) {
+            return false;
+        }
+
+        boost::json::object receipt;
+        receipt["message_id"] = acknowledgement_message_id->as_string();
+        if (!sendFrameAndEnableNonBlocking(current_alice, protocol::MessageType::delivery_receipt,
+                                            boost::json::serialize(receipt))) {
+            return false;
+        }
+        const auto delivered = readFrameWithDeadline(bob, 2s);
+        if (!delivered.has_value() || delivered->type != protocol::MessageType::delivery_receipt) {
+            return false;
+        }
+        const auto delivered_body = boost::json::parse(delivered->body).as_object();
+        const auto* delivered_local_id = delivered_body.if_contains("local_id");
+        const auto* delivered_status = delivered_body.if_contains("status");
+        if (delivered_local_id == nullptr || delivered_status == nullptr ||
+            !delivered_local_id->is_string() || !delivered_status->is_string() ||
+            delivered_local_id->as_string() != local_id || delivered_status->as_string() != "delivered") {
+            return false;
+        }
+
+        auto expectPong = [&](tcp::socket& socket, const std::string& body) {
+            if (!sendFrameAndEnableNonBlocking(socket, protocol::MessageType::ping, body)) {
+                return false;
+            }
+            const auto pong = readFrameWithDeadline(socket, 2s);
+            return pong.has_value() && pong->type == protocol::MessageType::pong && pong->body == body;
+        };
+        return expectPong(current_alice, "current-alice-alive") &&
+               expectPong(bob, "bob-alive") && expectPong(carol, "carol-alive");
+    } catch (const std::exception& error) {
+        std::cerr << "三账户同名接管测试异常：" << error.what() << '\n';
+        return false;
+    }
+}
+
+// 功能：验证三人在线时 Bob 主动断开并重新认证后，快照、路由与其余会话均恢复正常。
+bool testThreeAccountReconnectAfterDisconnect() {
+    try {
+        ScopedTestDirectory test_directory;
+        ServerFixture server;
+        asio::io_context client_io;
+        const std::vector<std::string> three_users{"alice", "bob", "carol"};
+        const std::vector<std::string> users_without_bob{"alice", "carol"};
+
+        auto alice = connectClient(client_io, server.port());
+        if (!authenticateAndReceiveSnapshot(alice, "alice", {"alice"})) {
+            return false;
+        }
+        auto old_bob = connectClient(client_io, server.port());
+        if (!authenticateAndReceiveSnapshot(old_bob, "bob", {"alice", "bob"}) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(alice, 2s), {"alice", "bob"})) {
+            return false;
+        }
+        auto carol = connectClient(client_io, server.port());
+        if (!authenticateAndReceiveSnapshot(carol, "carol", three_users) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(alice, 2s), three_users) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(old_bob, 2s), three_users)) {
+            return false;
+        }
+
+        std::error_code close_error;
+        old_bob.close(close_error);
+        if (close_error || !hasExpectedOnlineUsers(readFrameWithDeadline(alice, 2s), users_without_bob) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(carol, 2s), users_without_bob)) {
+            return false;
+        }
+
+        auto current_bob = connectClient(client_io, server.port());
+        if (!authenticateAndReceiveSnapshot(current_bob, "bob", three_users) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(alice, 2s), three_users) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(carol, 2s), three_users) ||
+            readFrameWithDeadline(alice, 150ms).has_value() ||
+            readFrameWithDeadline(carol, 150ms).has_value()) {
+            return false;
+        }
+
+        const std::string local_id{"reconnect-alice-bob"};
+        boost::json::object request;
+        request["to"] = "bob";
+        request["content"] = "route to reconnected bob";
+        request["local_id"] = local_id;
+        request["send_at"] = "2026-08-19T12:00:00.000Z";
+        if (!sendFrameAndEnableNonBlocking(alice, protocol::MessageType::chat,
+                                            boost::json::serialize(request))) {
+            return false;
+        }
+
+        const auto forwarded = readFrameWithDeadline(current_bob, 2s);
+        const auto acknowledgement = readFrameWithDeadline(alice, 2s);
+        if (!forwarded.has_value() || forwarded->type != protocol::MessageType::chat ||
+            !acknowledgement.has_value() || acknowledgement->type != protocol::MessageType::chat_ack) {
+            return false;
+        }
+
+        const auto forwarded_body = boost::json::parse(forwarded->body).as_object();
+        const auto acknowledgement_body = boost::json::parse(acknowledgement->body).as_object();
+        const auto* forwarded_from = forwarded_body.if_contains("from");
+        const auto* forwarded_to = forwarded_body.if_contains("to");
+        const auto* forwarded_content = forwarded_body.if_contains("content");
+        const auto* forwarded_local_id = forwarded_body.if_contains("local_id");
+        const auto* acknowledgement_local_id = acknowledgement_body.if_contains("local_id");
+        const auto* acknowledgement_status = acknowledgement_body.if_contains("status");
+        const auto* acknowledgement_message_id = acknowledgement_body.if_contains("message_id");
+        if (forwarded_from == nullptr || forwarded_to == nullptr || forwarded_content == nullptr ||
+            forwarded_local_id == nullptr || acknowledgement_local_id == nullptr ||
+            acknowledgement_status == nullptr || acknowledgement_message_id == nullptr ||
+            !forwarded_from->is_string() || !forwarded_to->is_string() ||
+            !forwarded_content->is_string() || !forwarded_local_id->is_string() ||
+            !acknowledgement_local_id->is_string() || !acknowledgement_status->is_string() ||
+            !acknowledgement_message_id->is_string() || forwarded_from->as_string() != "alice" ||
+            forwarded_to->as_string() != "bob" ||
+            forwarded_content->as_string() != "route to reconnected bob" ||
+            forwarded_local_id->as_string() != local_id ||
+            acknowledgement_local_id->as_string() != local_id ||
+            acknowledgement_status->as_string() != "accepted" ||
+            acknowledgement_message_id->as_string().empty()) {
+            return false;
+        }
+
+        boost::json::object receipt;
+        receipt["message_id"] = acknowledgement_message_id->as_string();
+        if (!sendFrameAndEnableNonBlocking(current_bob, protocol::MessageType::delivery_receipt,
+                                            boost::json::serialize(receipt))) {
+            return false;
+        }
+        const auto delivered = readFrameWithDeadline(alice, 2s);
+        if (!delivered.has_value() || delivered->type != protocol::MessageType::delivery_receipt) {
+            return false;
+        }
+        const auto delivered_body = boost::json::parse(delivered->body).as_object();
+        const auto* delivered_local_id = delivered_body.if_contains("local_id");
+        const auto* delivered_status = delivered_body.if_contains("status");
+        if (delivered_local_id == nullptr || delivered_status == nullptr ||
+            !delivered_local_id->is_string() || !delivered_status->is_string() ||
+            delivered_local_id->as_string() != local_id || delivered_status->as_string() != "delivered") {
+            return false;
+        }
+
+        auto expectPong = [&](tcp::socket& socket, const std::string& body) {
+            if (!sendFrameAndEnableNonBlocking(socket, protocol::MessageType::ping, body)) {
+                return false;
+            }
+            const auto pong = readFrameWithDeadline(socket, 2s);
+            return pong.has_value() && pong->type == protocol::MessageType::pong && pong->body == body;
+        };
+        return expectPong(alice, "alice-alive") && expectPong(current_bob, "current-bob-alive") &&
+               expectPong(carol, "carol-alive");
+    } catch (const std::exception& error) {
+        std::cerr << "三账户断开重连测试异常：" << error.what() << '\n';
+        return false;
+    }
+}
+
+
 // 功能：输出单项测试结论，并聚合为 CTest 可识别的进程退出状态。
 bool runTest(const char* name, const bool passed) {
     if (passed) {
@@ -554,7 +967,13 @@ int main() {
                                                          testUnauthenticatedPingTimesOut());
     const bool authenticated_deadline_cancelled = runTest("authenticated session cancels deadline",
                                                           testAuthenticatedSessionCancelsDeadline());
+    const bool three_account_relay = runTest("three_account_relay", testThreeAccountRelay());
+    const bool three_account_takeover = runTest("three account same username takeover",
+                                                testThreeAccountSameUsernameTakeover());
+    const bool three_account_reconnect = runTest("three account reconnect after disconnect",
+                                                 testThreeAccountReconnectAfterDisconnect());
     const bool passed = two_users_passed && capacity_passed && takeover_passed &&
-                        unauthenticated_timeout_passed && authenticated_deadline_cancelled;
+                        unauthenticated_timeout_passed && authenticated_deadline_cancelled &&
+                            three_account_relay && three_account_takeover && three_account_reconnect;
     return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

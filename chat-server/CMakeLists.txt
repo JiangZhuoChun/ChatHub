@@ -101,6 +101,16 @@ target_link_libraries(history_response_test PRIVATE
 )
 register_chat_server_test(history_response_test)
 
+add_executable(server_runtime_config_test
+    examples/server_runtime_config_test.cpp
+    app/server_runtime_config.cpp
+)
+configure_chat_server_target(server_runtime_config_test)
+target_include_directories(server_runtime_config_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/app
+)
+register_chat_server_test(server_runtime_config_test)
+
 add_executable(jwt_demo
     examples/jwt_demo.cpp
 )
