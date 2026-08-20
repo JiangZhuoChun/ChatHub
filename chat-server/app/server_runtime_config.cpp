@@ -127,6 +127,6 @@ namespace app {
             case ServerRuntimeConfigError::invalidAuthTimeout:
                 return "invalid_auth_timeout";
         }
-        return {"invalid_runtime_config_error"};
+        return "invalid_runtime_config_error";
     }
 }

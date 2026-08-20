@@ -47,6 +47,7 @@ add_executable(chat-server
     src/protocol/frame_decoder.cpp
     src/protocol/chat_payload.cpp
     src/repository/message_repository.cpp
+    app/server_runtime_config.cpp    
 )
 configure_chat_server_target(chat-server)
 target_include_directories(chat-server PRIVATE
@@ -110,6 +111,18 @@ target_include_directories(server_runtime_config_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/app
 )
 register_chat_server_test(server_runtime_config_test)
+
+add_executable(server_process_config_test
+    examples/server_process_config_test.cpp
+)
+configure_chat_server_target(server_process_config_test)
+target_link_libraries(server_process_config_test PRIVATE
+    ${CHAT_SERVER_NETWORK_LIBRARIES}
+)
+add_dependencies(server_process_config_test chat-server)
+add_test(NAME server_process_config_test
+    COMMAND $<TARGET_FILE:server_process_config_test> $<TARGET_FILE:chat-server>
+)
 
 add_executable(jwt_demo
     examples/jwt_demo.cpp

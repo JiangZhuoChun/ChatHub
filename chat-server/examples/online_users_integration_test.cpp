@@ -21,6 +21,7 @@
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -206,6 +207,45 @@ bool isAuthenticationTimeoutError(const std::optional<ReceivedFrame>& frame) {
     }
 }
 
+// 功能：验证认证拒绝帧携带指定的稳定错误码，避免测试依赖展示文案。
+bool isAuthenticationErrorWithCode(const std::optional<ReceivedFrame>& frame,
+                                   const std::string_view expected_code) {
+    if (!frame.has_value() || frame->type != protocol::MessageType::error) {
+        return false;
+    }
+
+    try {
+        const auto object = boost::json::parse(frame->body).as_object();
+        const auto* scope = object.if_contains("scope");
+        const auto* code = object.if_contains("code");
+        return scope != nullptr && code != nullptr && scope->is_string() && code->is_string() &&
+               scope->as_string() == "auth" && code->as_string() == expected_code;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+// 功能：验证数据库不可用错误仍保留聊天作用域和发送者的 local_id，供客户端定位失败气泡。
+bool isDatabaseUnavailableError(const std::optional<ReceivedFrame>& frame,
+                                const std::string& expected_local_id) {
+    if (!frame.has_value() || frame->type != protocol::MessageType::error) {
+        return false;
+    }
+
+    try {
+        const auto object = boost::json::parse(frame->body).as_object();
+        const auto* scope = object.if_contains("scope");
+        const auto* code = object.if_contains("code");
+        const auto* local_id = object.if_contains("local_id");
+        return scope != nullptr && code != nullptr && local_id != nullptr &&
+               scope->is_string() && code->is_string() && local_id->is_string() &&
+               scope->as_string() == "chat" && code->as_string() == "database_unavailable" &&
+               local_id->as_string() == expected_local_id;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 // 功能：在读取到拒绝 error 后确认服务端确实关闭候选连接。
 bool waitForSocketClosed(tcp::socket& socket, const std::chrono::milliseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -264,17 +304,93 @@ public:
     ScopedTestDirectory(const ScopedTestDirectory&) = delete;
     ScopedTestDirectory& operator=(const ScopedTestDirectory&) = delete;
 
+    const std::filesystem::path& path() const {
+        return m_test_path;
+    }
+
 private:
     std::filesystem::path m_previous_path;
     std::filesystem::path m_test_path;
 };
 
+// 功能：在 Server 线程启动前接管 cout，并在 Server 停止后读取本用例产生的运行日志。
+class ScopedCoutCapture {
+public:
+    ScopedCoutCapture()
+        : m_previous_buffer(std::cout.rdbuf(m_buffer.rdbuf())) {
+    }
+
+    ~ScopedCoutCapture() {
+        std::cout.rdbuf(m_previous_buffer);
+    }
+
+    ScopedCoutCapture(const ScopedCoutCapture&) = delete;
+    ScopedCoutCapture& operator=(const ScopedCoutCapture&) = delete;
+
+    std::string text() const {
+        return m_buffer.str();
+    }
+
+private:
+    std::ostringstream m_buffer;
+    std::streambuf* m_previous_buffer;
+};
+
+// 功能：从捕获文本中找到一条可按空格拆分的结构化 Session 日志。
+bool containsStructuredSessionLog(const std::string& logs,
+                                  const std::string_view expected_phase,
+                                  const std::string_view expected_event,
+                                  const std::string_view expected_code) {
+    std::istringstream lines(logs);
+    std::string line;
+    while (std::getline(lines, line)) {
+        std::istringstream fields(line);
+        std::string field;
+        std::string session_id;
+        std::string phase;
+        std::string event;
+        std::string code;
+        bool malformed = false;
+
+        while (fields >> field) {
+            const auto separator = field.find('=');
+            if (separator == std::string::npos) {
+                malformed = true;
+                break;
+            }
+
+            const auto key = field.substr(0, separator);
+            const auto value = field.substr(separator + 1);
+            if (key == "session_id") {
+                session_id = value;
+            } else if (key == "phase") {
+                phase = value;
+            } else if (key == "event") {
+                event = value;
+            } else if (key == "code") {
+                code = value;
+            }
+        }
+
+        if (!malformed && !session_id.empty() && phase == expected_phase &&
+            event == expected_event && code == expected_code) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // 功能：启动独立 Server 线程，并在析构时停止 io_context、等待线程退出后销毁 Server。
 class ServerFixture {
 public:
-    ServerFixture()
+    explicit ServerFixture(const std::string& database_path = "chathub.db",
+                           const std::chrono::milliseconds authentication_timeout = 5000ms)
         : m_port(findAvailablePort()),
-          m_server(std::make_unique<net::Server>(m_server_io, m_port)) {
+          // 测试夹具显式复用生产默认配置；ScopedTestDirectory 已隔离该数据库文件。
+          m_server(std::make_unique<net::Server>(m_server_io,
+                                                 m_port,
+                                                 database_path,
+                                                  authentication_timeout)) {
         m_server->start();
         m_server_thread = std::thread([this] {
             m_server_io.run();
@@ -454,6 +570,59 @@ bool testCapacityBoundaryAndRecovery() {
     }
 }
 
+// 功能：把数据库路径预先创建为目录，验证不可用数据库只拒绝当前聊天请求而不影响已认证会话。
+bool testDatabaseUnavailableKeepsAuthenticatedSessionsAlive() {
+    try {
+        ScopedTestDirectory test_directory;
+        const auto unavailable_database_path = test_directory.path() / "database-is-a-directory";
+        std::error_code directory_error;
+        if (!std::filesystem::create_directory(unavailable_database_path, directory_error) ||
+            directory_error) {
+            return false;
+        }
+
+        ServerFixture server(unavailable_database_path.string());
+        asio::io_context client_io;
+        auto alice = connectClient(client_io, server.port());
+        if (!authenticateAndReceiveSnapshot(alice, "alice", {"alice"})) {
+            return false;
+        }
+
+        auto bob = connectClient(client_io, server.port());
+        if (!authenticateAndReceiveSnapshot(bob, "bob", {"alice", "bob"}) ||
+            !hasExpectedOnlineUsers(readFrameWithDeadline(alice, 2s), {"alice", "bob"})) {
+            return false;
+        }
+
+        constexpr std::string_view local_id{"database-unavailable-local-id"};
+        boost::json::object request;
+        request["to"] = "bob";
+        request["content"] = "must not be persisted";
+        request["local_id"] = local_id;
+        request["send_at"] = "2026-08-20T12:00:00.000Z";
+        if (!sendFrameAndEnableNonBlocking(alice, protocol::MessageType::chat,
+                                            boost::json::serialize(request)) ||
+            !isDatabaseUnavailableError(readFrameWithDeadline(alice, 2s),
+                                        std::string(local_id))) {
+            return false;
+        }
+
+        const auto expect_pong = [](tcp::socket& socket, const std::string& body) {
+            return sendFrameAndEnableNonBlocking(socket, protocol::MessageType::ping, body) &&
+                   [&] {
+                       const auto pong = readFrameWithDeadline(socket, 2s);
+                       return pong.has_value() && pong->type == protocol::MessageType::pong &&
+                              pong->body == body;
+                   }();
+        };
+        return expect_pong(alice, "alice-still-alive") &&
+               expect_pong(bob, "bob-still-alive");
+    } catch (const std::exception& error) {
+        std::cerr << "数据库不可用隔离测试异常：" << error.what() << '\n';
+        return false;
+    }
+}
+
 // 功能：覆盖同名接管后旧会话关闭不应删除新映射的回归路径。
 bool testSameUsernameTakeoverKeepsCurrentMapping() {
     try {
@@ -527,6 +696,64 @@ bool testAuthenticatedSessionCancelsDeadline() {
                pong->body == "alive";
     } catch (const std::exception& error) {
         std::cerr << "认证成功取消截止测试异常：" << error.what() << '\n';
+        return false;
+    }
+}
+
+// 功能：验证会话错误日志使用可解析字段、记录认证拒绝原因，并且不回显入站 error 正文。
+bool testSessionStructuredErrorLogs() {
+    try {
+        ScopedTestDirectory test_directory;
+        std::string logs;
+        bool invalid_username_rejected = false;
+        bool authentication_timed_out = false;
+        bool peer_error_ignored = false;
+        constexpr std::string_view peer_error_body{"peer-error-body-must-not-be-logged"};
+
+        {
+            ScopedCoutCapture log_capture;
+            {
+                ServerFixture server("chathub.db", 1000ms);
+                asio::io_context client_io;
+
+                auto invalid_username_client = connectClient(client_io, server.port());
+                invalid_username_rejected =
+                    sendAuth(invalid_username_client, "x") &&
+                    isAuthenticationErrorWithCode(
+                        readFrameWithDeadline(invalid_username_client, 2s),
+                        "invalid_username_claim") &&
+                    waitForSocketClosed(invalid_username_client, 2s);
+
+                auto timeout_client = connectClient(client_io, server.port());
+                authentication_timed_out =
+                    sendFrameAndEnableNonBlocking(timeout_client, protocol::MessageType::ping, "probe") &&
+                    isAuthenticationTimeoutError(readFrameWithDeadline(timeout_client, 2500ms)) &&
+                    waitForSocketClosed(timeout_client, 2s);
+
+                auto authenticated_client = connectClient(client_io, server.port());
+                peer_error_ignored =
+                    authenticateAndReceiveSnapshot(authenticated_client, "alice", {"alice"}) &&
+                    sendFrameAndEnableNonBlocking(authenticated_client, protocol::MessageType::error,
+                                                  std::string(peer_error_body)) &&
+                    sendFrameAndEnableNonBlocking(authenticated_client, protocol::MessageType::ping, "alive") &&
+                    [&] {
+                        const auto pong = readFrameWithDeadline(authenticated_client, 2s);
+                        return pong.has_value() && pong->type == protocol::MessageType::pong &&
+                               pong->body == "alive";
+                    }();
+            }
+            logs = log_capture.text();
+        }
+
+        return invalid_username_rejected && authentication_timed_out && peer_error_ignored &&
+               containsStructuredSessionLog(
+                   logs, "auth", "authentication_rejected", "invalid_username_claim") &&
+               containsStructuredSessionLog(
+                   logs, "auth", "authentication_rejected", "authentication_timeout") &&
+               containsStructuredSessionLog(logs, "dispatch", "peer_error_ignored", "inbound_error") &&
+               logs.find(peer_error_body) == std::string::npos;
+    } catch (const std::exception& error) {
+        std::cerr << "会话结构化错误日志测试异常：" << error.what() << '\n';
         return false;
     }
 }
@@ -961,19 +1188,25 @@ int main() {
                                           testTwoUsersReceiveOneSharedSnapshotInOrder());
     const bool capacity_passed = runTest("online snapshot capacity boundary and recovery",
                                          testCapacityBoundaryAndRecovery());
+    const bool database_unavailable_passed = runTest(
+        "database unavailable keeps authenticated sessions alive",
+        testDatabaseUnavailableKeepsAuthenticatedSessionsAlive());
     const bool takeover_passed = runTest("same username takeover keeps current mapping",
                                          testSameUsernameTakeoverKeepsCurrentMapping());
     const bool unauthenticated_timeout_passed = runTest("unauthenticated ping times out",
                                                          testUnauthenticatedPingTimesOut());
     const bool authenticated_deadline_cancelled = runTest("authenticated session cancels deadline",
                                                           testAuthenticatedSessionCancelsDeadline());
+    const bool structured_error_logs = runTest("session structured error logs",
+                                               testSessionStructuredErrorLogs());
     const bool three_account_relay = runTest("three_account_relay", testThreeAccountRelay());
     const bool three_account_takeover = runTest("three account same username takeover",
                                                 testThreeAccountSameUsernameTakeover());
     const bool three_account_reconnect = runTest("three account reconnect after disconnect",
                                                  testThreeAccountReconnectAfterDisconnect());
-    const bool passed = two_users_passed && capacity_passed && takeover_passed &&
-                        unauthenticated_timeout_passed && authenticated_deadline_cancelled &&
-                            three_account_relay && three_account_takeover && three_account_reconnect;
+    const bool passed = two_users_passed && capacity_passed && database_unavailable_passed && takeover_passed &&
+                         unauthenticated_timeout_passed && authenticated_deadline_cancelled &&
+                             structured_error_logs && three_account_relay && three_account_takeover &&
+                             three_account_reconnect;
     return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

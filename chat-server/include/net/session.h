@@ -10,6 +10,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -52,9 +53,12 @@ public:
     // ==================== 模块：生命周期与对外发送 ====================
     // 功能：接管已接受的 Socket，并保存消息、断开和认证准入请求回调。
     Session(asio::ip::tcp::socket socket, SessionId session_id,
-            MessageCallback on_message, DisconnectCallback on_disconnect,
+            std::chrono::milliseconds authentication_timeout,
+            MessageCallback on_message,
+            DisconnectCallback on_disconnect,
             AuthenticationRequestedCallback on_authentication_requested,
             AuthenticationTimeoutCallback on_authentication_timeout);
+
 
     // 功能：将首个异步读取任务投递到本会话 strand，开始处理客户端字节流。
     void start();
@@ -76,7 +80,7 @@ public:
 
     // 功能：仅由 Server 在在线准入拒绝后调用；先发送已序列化的错误帧，
     //       再在当前写队列排空后关闭连接，避免客户端收不到错误原因。
-    void rejectAuthentication(std::string error_body);
+    void rejectAuthentication(std::string error_body,std::string error_code);
 
 private:
 
@@ -86,7 +90,6 @@ private:
 
     void handleAuthenticationDeadlineOnStrand(const std::error_code& error);
 
-    static constexpr auto kAuthenticationTimeout = std::chrono::seconds{5};
     // ==================== 模块：异步读取与帧解码 ====================
     // 功能：异步读取 Socket 字节，交给帧解码器处理后继续安排下一次读取。
     // 失败：读取或协议解码失败时关闭会话并通知 Server 清理在线记录。
@@ -129,14 +132,18 @@ private:
     static std::string makeHistoryError(const std::string& code,const std::string& message);
 
     // 功能
-    void rejectAuthenticationOnStrand(std::string error_body);
+    void rejectAuthenticationOnStrand(const std::string& error_body,const std::string& error_code);
 
     // ==================== 模块：关闭与日志 ====================
     // 功能：幂等地标记会话断开，并通知 Server 从在线表中移除当前会话。
     void closeOnStrand();
 
     // 功能：统一输出会话相关事件，便于排查连接和协议问题。
-    static void log(std::string_view event);
+    void log(std::string_view phase,
+             std::string_view event,
+             std::string_view code,
+             std::optional<std::size_t> actual = std::nullopt,
+             std::optional<std::size_t> limit = std::nullopt)  const;
 
     // ==================== 模块：写队列限制 ====================
     // 功能：限制慢客户端积压的待发送帧数量，超过限制后关闭会话。
@@ -151,6 +158,9 @@ private:
 
 
     asio::steady_timer m_authentication_timer;
+
+
+    const std::chrono::milliseconds m_authentication_timeout;
 
     // 功能：缓存半包和粘包并还原完整协议帧。
     protocol::FrameDecoder m_decoder;

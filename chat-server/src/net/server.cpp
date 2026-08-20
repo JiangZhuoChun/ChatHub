@@ -5,9 +5,9 @@
 #include <boost/json.hpp>
 
 #include <iostream>
-#include <string_view>
 #include <algorithm>
 #include <vector>
+#include <iomanip>
 namespace {
 
 // ==================== 模块：路由错误正文构造 ====================
@@ -66,10 +66,12 @@ std::string makeHistoryResultBody(const std::string& request_id,const boost::jso
     object["messages"] = messages;
     object["is_last_chunk"] = is_last_chunk;
 
-    if (is_last_chunk) {
+    if (is_last_chunk)
+    {
         object["has_more"] = query_result.has_more;
 
-        if (query_result.has_more && query_result.next_cursor.has_value()) {
+        if (query_result.has_more && query_result.next_cursor.has_value())
+        {
             boost::json::object cursor;
             cursor["server_received_at_ms"] = query_result.next_cursor->server_received_at_ms;
             cursor["message_id"] = query_result.next_cursor->message_id;
@@ -104,12 +106,17 @@ namespace net {
 
 // ==================== 模块：生命周期与监听 ====================
 // 功能：创建 Server 串行执行器，绑定 IPv4 监听端口，并准备异步接受使用的 Socket。
-Server::Server(asio::io_context& io_context, const std::uint16_t port)
+Server::Server(asio::io_context& io_context,
+                const std::uint16_t port,
+                const std::string& database_path,
+                const std::chrono::milliseconds authentication_timeout)
     : m_strand(asio::make_strand(io_context)),
       m_acceptor(io_context, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port)),
-      m_pending_socket(io_context)
+      m_pending_socket(io_context),
+      m_database_path(database_path),
+      m_authentication_timeout(authentication_timeout)
 {
-    m_database_available = m_message_repository.open("chathub.db");
+    m_database_available = m_message_repository.open(m_database_path);
     if (!m_database_available) {
         std::cerr << "SQLite 初始化失败：聊天持久化暂不可用" << std::endl;
     }
@@ -117,7 +124,11 @@ Server::Server(asio::io_context& io_context, const std::uint16_t port)
 
 // 功能：输出当前监听地址并启动第一个异步接受操作。
 void Server::start() {
-    std::cout << "正在监听端口：" << m_acceptor.local_endpoint() << std::endl;
+    std::cout << "server_started"
+            << " endpoint=" << m_acceptor.local_endpoint()
+            << " database_path=" << std::quoted(m_database_path)
+            << " auth_timeout_ms=" << m_authentication_timeout.count()
+            << std::endl;
     doAccept();
 }
 
@@ -186,7 +197,10 @@ void Server::doAccept() {
                     };
 
                     const auto session = std::make_shared<Session>(
-                        std::move(m_pending_socket), session_id, std::move(on_message),
+                        std::move(m_pending_socket),
+                        session_id,
+                        m_authentication_timeout,
+                        std::move(on_message),
                         std::move(on_disconnect), std::move(on_authentication_requested),
                         std::move(on_authentication_timeout));
                     addSession(session_id, session);
@@ -579,7 +593,7 @@ void Server::handleHistoryQuery(SessionId sender_id, const protocol::Message &me
 }
 
 // 功能：构建在线用户列表帧的 body 部分。
-std::optional<std::string> Server::buildOnlineUsersBody(std::vector<std::string> usernames) const {
+std::optional<std::string> Server::buildOnlineUsersBody(std::vector<std::string> usernames) {
     //1.排序
     std::sort(usernames.begin(), usernames.end());
     //2.去重
@@ -626,7 +640,8 @@ void Server::handleAuthenticationRequest(SessionId session_id, std::string usern
     auto candidate_body = buildOnlineUsersBody(std::move(candidate_usernames));
     //5. 失败则 rejectAuthentication 后 return
     if (!candidate_body.has_value()) {
-        session_it->second->rejectAuthentication(makeOnlineUsersCapacityErrorBody());
+        session_it->second->rejectAuthentication(makeOnlineUsersCapacityErrorBody(),
+                                    "online_snapshot_capacity_exceeded");
         return;
     }
     // 只从这里开始，才允许改真实在线映射。
@@ -662,7 +677,8 @@ void Server::handleAuthenticationTimeout(const SessionId session_id) {
     if (m_session_to_username.find(session_id) != m_session_to_username.end()) {
         return;
     }
-    session_it->second->rejectAuthentication(makeAuthenticationTimeoutErrorBody());
+    session_it->second->rejectAuthentication(makeAuthenticationTimeoutErrorBody(),
+                                 "authentication_timeout");
 }
 
 void Server::sendOnlineUsersBody(const std::string &online_users_body, std::optional<SessionId> excluded_session_id) {

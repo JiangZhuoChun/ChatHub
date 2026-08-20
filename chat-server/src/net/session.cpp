@@ -4,11 +4,11 @@
 
 #include <boost/json.hpp>
 #include <jwt-cpp/jwt.h>
-#include <jwt-cpp/traits/kazuho-picojson/defaults.h>
 
 #include <iostream>
 #include <chrono>
-
+#include <mutex>
+#include <sstream>
 // ==================== 模块：令牌验证配置 ====================
 // 功能：保存当前开发环境用于验证 HS256 令牌的密钥。
 const std::string SECRET_KEY = "chathub-dev-secret";
@@ -18,18 +18,22 @@ namespace net {
 // ==================== 模块：生命周期与对外发送 ====================
 // 功能：接管 Socket，创建会话 strand，并保存由 Server 注入的三个回调。
 Session::Session(asio::ip::tcp::socket socket, SessionId session_id,
-                 MessageCallback on_message, DisconnectCallback on_disconnect,
+                 std::chrono::milliseconds authentication_timeout,
+                 MessageCallback on_message,
+                 DisconnectCallback on_disconnect,
                  AuthenticationRequestedCallback on_authentication_requested,
                  AuthenticationTimeoutCallback on_authentication_timeout)
     : m_socket(std::move(socket)),
       m_strand(m_socket.get_executor()),
       m_authentication_timer(m_strand),
+      m_authentication_timeout(authentication_timeout),
       m_on_message(std::move(on_message)),
       m_id(session_id),
       m_on_disconnect(std::move(on_disconnect)),
       on_authentication_requested(std::move(on_authentication_requested)),
       m_on_authentication_timeout(std::move(on_authentication_timeout))
 {
+
 }
 
 // 功能：将第一次读取任务投递到会话 strand，确保异步回调开始前会话对象已被持有。
@@ -85,7 +89,7 @@ void Session::completeAuthentication(std::string username, std::string online_us
                return;
            }
             if (online_users_body.size() > protocol::kMaxFrameBodyLength) {
-                closeOnStrand();
+                self->closeOnStrand();
                 return;
             }
 
@@ -102,15 +106,18 @@ void Session::completeAuthentication(std::string username, std::string online_us
 
 // 功能：接收 Server 已确认有效的拒绝错误正文，写完 error 帧后再关闭会话。
 // 边界：错误正文超过帧上限时保护性关闭；会话不再等待准入时直接忽略请求。
-void Session::rejectAuthentication(std::string error_body) {
+void Session::rejectAuthentication(std::string error_body,std::string error_code) {
     const auto self = shared_from_this();
-    asio::post(m_strand,[self,error_body = std::move(error_body)]() mutable {
-        self->rejectAuthenticationOnStrand(std::move(error_body));
+
+    asio::post(m_strand,
+        [self,error_body = std::move(error_body),
+                error_code = std::move(error_code)]() mutable {
+        self->rejectAuthenticationOnStrand(error_body, error_code);
     }) ;
 }
 
 void Session::startAuthenticationDeadlineOnStrand() {
-    m_authentication_timer.expires_after(kAuthenticationTimeout);
+    m_authentication_timer.expires_after(m_authentication_timeout);
 
     const auto self = shared_from_this();
 
@@ -130,7 +137,7 @@ void Session::handleAuthenticationDeadlineOnStrand(const std::error_code &error)
         return;
     }
     if (error) {
-        log("认证截止计时器异常");
+        log("auth", "authentication_deadline_wait_failed", "timer_wait_failed");
         closeOnStrand();
         return;
     }
@@ -149,7 +156,8 @@ void Session::handleAuthenticationDeadlineOnStrand(const std::error_code &error)
     }
 }
 
-void Session::rejectAuthenticationOnStrand(std::string error_body) {
+void Session::rejectAuthenticationOnStrand(const std::string& error_body,const std::string& error_code)
+{
     if (m_disconnected || !m_authentication_pending || m_close_after_write) {
         return;
     }
@@ -157,6 +165,7 @@ void Session::rejectAuthenticationOnStrand(std::string error_body) {
         closeOnStrand();
         return;
     }
+    log("auth", "authentication_rejected", error_code);
     // 记录“这一批队列写完后要关闭”，但此刻不关，确保 error 帧先完成异步写入。
     m_close_after_write = true;
     enqueueAndWrite(protocol::MessageType::error, error_body, true);
@@ -175,16 +184,15 @@ void Session::doRead() {
             [self, this](const std::error_code error, const std::size_t bytes_transferred) {
                 if (error) {
                     if (error == asio::error::eof) {
-                        Session::log("正常断开连接");
+                        self->log("read", "peer_disconnected", "normal_disconnect");
                     } else if (error == asio::error::operation_aborted) {
                         return;
                     } else {
-                        std::cerr << "错误：" << error.message() << std::endl;
+                        self->log("read", "socket_read_failed", "socket_read_failed");
                     }
                     self->closeOnStrand();
                     return;
                 }
-
                 const auto result = m_decoder.append(
                     m_read_buffer.data(), bytes_transferred,
                     // 功能：将每条完整协议消息交给当前会话的业务分派函数。
@@ -192,7 +200,7 @@ void Session::doRead() {
                         self->handlerMessage(message);
                     });
                 if (result != protocol::DecodeResult::ok) {
-                    log("协议错误，关闭当前连接");
+                    log("read", "frame_decode_rejected", "frame_decode_failed");
                     self->closeOnStrand();
                     return;
                 }
@@ -206,14 +214,16 @@ void Session::doRead() {
 void Session::enqueueAndWrite(const protocol::MessageType type, const std::string& body,
                               const bool allow_terminal_overflow) {
     if (body.size() > protocol::kMaxFrameBodyLength) {
-        std::cerr << "错误：body长度超出限制" << std::endl;
+        log("write", "outbound_frame_rejected", "frame_body_too_large",
+            body.size(),protocol::kMaxFrameBodyLength);
         return;
     }
 
     const bool was_empty = m_write_queue.empty();
     if (m_write_queue.size() >= kMaxWriteQueueSize && !allow_terminal_overflow) {
-        std::cout << "错误：发送队列已满：" << m_write_queue.size() << "/"
-                  << kMaxWriteQueueSize << "关闭慢客户端" << std::endl;
+        log("write", "slow_client_disconnected", "write_queue_full",
+            m_write_queue.size(),kMaxWriteQueueSize);
+
         closeOnStrand();
         return;
     }
@@ -240,13 +250,12 @@ void Session::writeFrame() {
             // 功能：处理当前队首帧的写入结果，并按顺序继续下一个帧。
             [self, this](const std::error_code error, const std::size_t bytes_transferred) {
                 if (error) {
-                    std::cerr << "错误,发送失败" << error.message() << std::endl;
+                    self->log("write", "socket_write_failed", "socket_write_failed");
                     self->closeOnStrand();
                     return;
                 }
 
                 m_write_queue.pop_front();
-                std::cout << "发送成功：" << bytes_transferred << "字节" << std::endl;
 
                 if (m_write_queue.empty()) {
                     if (self->m_close_after_write) {
@@ -265,7 +274,7 @@ void Session::startNextHistoryResultBody() {
     if (!m_write_queue.empty() || m_pending_history_result_bodies.empty()) {
         return;
     }
-    std::string body = std::move(m_pending_history_result_bodies.front());
+    const std::string body = std::move(m_pending_history_result_bodies.front());
     m_pending_history_result_bodies.pop_front();
     enqueueAndWrite(protocol::MessageType::history_result,body);
 }
@@ -331,7 +340,7 @@ void Session::handlerMessage(const protocol::Message& message) {
     }
 
     if (m_authentication_pending) {
-        log("会话正在等待 Server 准入，忽略额外帧");
+        log("auth", "additional_frame_ignored","authentication_pending");
         return;
     }
 
@@ -357,10 +366,12 @@ void Session::handlerMessage(const protocol::Message& message) {
             if (verification == JwtVerificationResult::invalid_username_claim)
             {
                 m_authentication_pending = true;
-                rejectAuthenticationOnStrand(makeAuthError("invalid_username_claim", "JWT 用户名不合法"));
+                rejectAuthenticationOnStrand(
+                    makeAuthError("invalid_username_claim", "JWT 用户名不合法"),
+                    "invalid_username_claim");
                 return;
             }
-            log("认证失败，关闭连接");
+            log("auth","authentication_rejected","jwt_verification_failed");
             closeOnStrand();
             return;
         }
@@ -368,7 +379,7 @@ void Session::handlerMessage(const protocol::Message& message) {
         // 心跳不是认证行为：忽略它但不重置认证截止。
         if (message.type == protocol::MessageType::ping ||
             message.type == protocol::MessageType::pong) {
-            log("未认证会话心跳被忽略");
+            log("auth", "heartbeat_ignored", "unauthenticated_heartbeat");
             return;
         }
 
@@ -471,14 +482,12 @@ void Session::handlerMessage(const protocol::Message& message) {
         break;
     }
     case protocol::MessageType::ping:
-        std::cout << "收到ping" << std::endl;
         send(protocol::MessageType::pong, message.body);
         break;
     case protocol::MessageType::pong:
-        std::cout << "收到pong" << std::endl;
         break;
     case protocol::MessageType::error:
-        std::cerr << "错误：" << message.body << std::endl;
+        log("dispatch", "peer_error_ignored", "inbound_error");
         break;
     case protocol::MessageType::auth:
         break;
@@ -605,8 +614,30 @@ void Session::closeOnStrand() {
 }
 
 // 功能：统一输出会话生命周期与协议处理日志。
-void Session::log(const std::string_view event) {
-    std::cout << event << std::endl;
+void Session::log(std::string_view phase, std::string_view event, std::string_view code,
+    std::optional<std::size_t> actual,std::optional<std::size_t> limit) const
+{
+    //1.先在局部变量中拼完整条日志
+    std::ostringstream oss;
+    oss << "session_id=" << m_id
+        << " phase=" << phase
+        << " event=" << event
+        << " code=" << code;
+    // 2. optional 有值时才输出
+    if (actual.has_value() ) {
+        oss << " actual=" << *actual;
+    }
+    if (limit.has_value() ) {
+        oss << " limit=" << *limit;
+    }
+    // 3. 函数内 static：所有 log() 调用共享同一把锁
+    static std::mutex log_mutex;
+
+    // 4. 只保护最终输出
+    {
+        std::lock_guard<std::mutex> lock(log_mutex);
+        std::cout << oss.str() << '\n';
+    }
 }
 
 } // net 命名空间结束

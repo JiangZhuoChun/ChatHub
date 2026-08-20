@@ -1,6 +1,6 @@
 # ChatHub 协议字段与状态流向总图
 
-> 状态：持续维护 | 创建：2026-08-13 | 当前范围：W8 已实现 + W9 已确定的协议合同
+> 状态：持续维护 | 创建：2026-08-13 | 当前范围：W8–W10 已实现的协议合同
 >
 > 用途：任何新增、删除或变更协议字段、消息身份、状态值前，先更新本文件；实现、测试和需求文档在同一次提交中同步更新。本文件用于核对流向，具体校验规则以对应需求文档和代码为准。
 
@@ -27,7 +27,7 @@
 - [ ] 在“状态机”中写清新状态的进入和退出条件；
 - [ ] 更新服务端解析、客户端解析、内存结构和 SQLite 映射；
 - [ ] 为正常、缺失字段、错误类型和重复请求补测试；
-- [ ] 更新对应 W8/W9 需求文档和学习笔记。
+- [ ] 更新对应 W8/W9/W10 需求文档和学习笔记。
 
 ---
 
@@ -80,10 +80,10 @@ flowchart LR
 | 7 | `delivery_receipt`，B → Server | `{ message_id }` | Server 校验 B 的认证身份等于 `PendingDelivery::recipient_username` |
 | 7 | `delivery_receipt`，Server → A | `{ local_id, status: "delivered" }` | A 仅改既有气泡状态，不新建气泡、不置顶 |
 | 8 | `online_users`，Server → Client | `{ users: ["alice", "bob"] }` | 客户端严格校验字符串数组、去重后整体替换在线列表 |
-| 9 | `history_query`，Client → Server | `{ request_id, limit, before? }` | **W9 待实现**；身份只能从认证 Session 推导 |
-| 10 | `history_result`，Server → Client | `{ request_id, messages, is_last_chunk, has_more, next_cursor }` | **W9 待实现**；每条历史记录含 `message_id`，客户端据此去重 |
+| 9 | `history_query`，Client → Server | `{ request_id, limit, before? }` | 已认证后发起；身份只能从认证 Session 推导，首屏上限 50 条 |
+| 10 | `history_result`，Server → Client | `{ request_id, messages, is_last_chunk, has_more, next_cursor }` | 已实现；每条历史记录含 `message_id`，按实际编码字节分块，客户端仅在最终块合并 |
 
-其中 W9 历史单条记录的预定字段：
+其中 W9 历史单条记录的当前字段：
 
 ```json
 {
@@ -122,7 +122,7 @@ flowchart TD
 
 | 位置 | 保存什么 | 生命周期 | 重启后 |
 |---|---|---|---|
-| A 的 `ChatMessage` | `local_id`、收到 ack 后的 `message_id`、`server_received_at_ms`、展示状态 | 客户端当前内存，W9 后扩展为历史与实时合并来源 | 当前版本不恢复 |
+| A 的 `ChatMessage` | `local_id`、收到 ack 后的 `message_id`、`server_received_at_ms`、展示状态 | 客户端内存；认证后合并历史与实时消息 | 重连后由显式历史查询恢复，不伪造 `Delivered` |
 | SQLite `messages` | 一条消息的完整持久业务数据 | 数据库 | 保留，可供历史查询 |
 | `PendingDeliveryMap` | 回执归属与 A 侧气泡定位信息，不保存正文 | Server 进程内，直至回执或相关断线 | 清空，不能恢复 `Delivered` |
 
@@ -195,6 +195,8 @@ sequenceDiagram
 | B 重复回执 | `message_id` | 第一条回执后待送达记录已删除；第二条被拒绝 |
 | A 或真正离线的 B 断线 | `sender_session_id` / `recipient_username` | 删除相关 `PendingDelivery`；A 不被伪造为 `Delivered` |
 | ChatServer 重启 | 内存表清空 | SQLite 历史仍在；`Delivered` 不恢复 |
+| 未认证连接达到截止 | 无可信身份 | 返回 `scope=auth` / `code=authentication_timeout` 后关闭，不进入在线映射 |
+| 第 89 名用户认证 | 完整在线快照容量 | 返回 `scope=online_users` / `code=online_snapshot_capacity_exceeded` 后关闭，既有映射不变 |
 
 ---
 

@@ -7,15 +7,18 @@
 #include <unordered_map>
 #include <optional>
 #include <vector>
+#include <chrono>
 namespace net {
-
 
 // ==================== 模块：聊天服务器 ====================
 class Server {
 public:
     // ==================== 模块：生命周期与监听 ====================
     // 功能：创建 Server strand、绑定监听端口，并准备下一次接受连接的 Socket。
-    Server(asio::io_context& io_context, std::uint16_t port);
+    Server(asio::io_context& io_context,
+            std::uint16_t port,
+            const std::string& database_path,
+            std::chrono::milliseconds authentication_timeout);
 
     // 功能：输出监听信息并开始持续异步接受新的 TCP 连接。
     void start();
@@ -68,13 +71,13 @@ private:
     void handleHistoryQuery(SessionId sender_id,const protocol::Message& message);
 
     // 功能：从认证用户名映射生成稳定排序的 online_users JSON 正文。
-    std::optional<std::string>buildOnlineUsersBody(std::vector<std::string> usernames) const;
+    static std::optional<std::string>buildOnlineUsersBody(std::vector<std::string> usernames) ;
 
     //完成候选计算、失败拒绝、成功提交和同名接管
     void handleAuthenticationRequest(SessionId session_id, std::string username);
 
 
-    void handleAuthenticationTimeout(const SessionId session_id);
+    void handleAuthenticationTimeout(SessionId session_id);
 
     //只发送一份已经验证过的 JSON body，不再排序、不再序列化、不再做业务判断。
     void sendOnlineUsersBody(const std::string& online_users_body,
@@ -96,6 +99,10 @@ private:
 
     // 功能：在异步接受期间保存待转交给新 Session 的 Socket。
     asio::ip::tcp::socket m_pending_socket;
+    // 功能：保存本次实际打开的 SQLite 路径，供启动日志说明有效运行配置
+    const std::string m_database_path;
+    // 功能：保存本次实际打开的认证超时时间，供启动日志说明有效运行配置
+    const std::chrono::milliseconds m_authentication_timeout;
 
     // ==================== 模块：会话表 ====================
     // 功能：为下一个连接分配递增且唯一的会话标识。
