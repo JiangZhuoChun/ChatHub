@@ -5,39 +5,33 @@
 #include <boost/json.hpp>
 #include <jwt-cpp/jwt.h>
 
-#include <iostream>
 #include <chrono>
+#include <iostream>
 #include <mutex>
 #include <sstream>
 // ==================== 模块：令牌验证配置 ====================
 // 功能：保存当前开发环境用于验证 HS256 令牌的密钥。
 const std::string SECRET_KEY = "chathub-dev-secret";
 
-namespace net {
+namespace net
+{
 
 // ==================== 模块：生命周期与对外发送 ====================
 // 功能：接管 Socket，创建会话 strand，并保存由 Server 注入的三个回调。
-Session::Session(asio::ip::tcp::socket socket, SessionId session_id,
-                 std::chrono::milliseconds authentication_timeout,
-                 MessageCallback on_message,
-                 DisconnectCallback on_disconnect,
+Session::Session(asio::ip::tcp::socket socket, SessionId session_id, std::chrono::milliseconds authentication_timeout,
+                 MessageCallback on_message, DisconnectCallback on_disconnect,
                  AuthenticationRequestedCallback on_authentication_requested,
                  AuthenticationTimeoutCallback on_authentication_timeout)
-    : m_socket(std::move(socket)),
-      m_strand(m_socket.get_executor()),
-      m_authentication_timer(m_strand),
-      m_authentication_timeout(authentication_timeout),
-      m_on_message(std::move(on_message)),
-      m_id(session_id),
-      m_on_disconnect(std::move(on_disconnect)),
-      on_authentication_requested(std::move(on_authentication_requested)),
+    : m_socket(std::move(socket)), m_strand(m_socket.get_executor()), m_authentication_timer(m_strand),
+      m_authentication_timeout(authentication_timeout), m_on_message(std::move(on_message)), m_id(session_id),
+      m_on_disconnect(std::move(on_disconnect)), on_authentication_requested(std::move(on_authentication_requested)),
       m_on_authentication_timeout(std::move(on_authentication_timeout))
 {
-
 }
 
 // 功能：将第一次读取任务投递到会话 strand，确保异步回调开始前会话对象已被持有。
-void Session::start() {
+void Session::start()
+{
     const auto self = shared_from_this();
     asio::post(m_strand,
                // 功能：在会话串行执行器中启动持续读取流程。
@@ -49,119 +43,127 @@ void Session::start() {
 }
 
 // 功能：将发送请求投递到会话 strand，保证写队列只被串行访问。
-void Session::send(const protocol::MessageType type, std::string body) {
+void Session::send(const protocol::MessageType type, std::string body)
+{
     const auto self = shared_from_this();
     asio::post(m_strand,
                // 功能：在会话串行执行器中将消息编码后压入写队列。
-               [self, type, body = std::move(body)] {
-                   self->enqueueAndWrite(type, body);
-               });
+               [self, type, body = std::move(body)] { self->enqueueAndWrite(type, body); });
 }
 
-void Session::sendHistoryResultBodies(std::vector<std::string> bodies) {
+void Session::sendHistoryResultBodies(std::vector<std::string> bodies)
+{
     const auto self = shared_from_this();
-    asio::post(m_strand,
-        [self ,bodies = std::move(bodies)]() mutable {
-        for (std::string& body : bodies) {
+    asio::post(m_strand, [self, bodies = std::move(bodies)]() mutable {
+        for (std::string &body : bodies)
+        {
             self->m_pending_history_result_bodies.push_back(std::move(body));
         }
-            self->startNextHistoryResultBody();
+        self->startNextHistoryResultBody();
     });
 }
 
 // 功能：将关闭请求投递到会话 strand，避免 Server 线程直接并发修改 Session 状态。
-void Session::requestClose() {
+void Session::requestClose()
+{
     const auto self = shared_from_this();
-    asio::post(m_strand, [self] {
-        self->closeOnStrand();
-    });
+    asio::post(m_strand, [self] { self->closeOnStrand(); });
 }
 
 // 功能：接收 Server 已确认有效的用户名与在线快照，原子地完成本会话的认证发送序列。
 // 顺序：仅在认证待定时提交认证状态，并将 auth.ok 排在 online_users 之前入写队列。
-void Session::completeAuthentication(std::string username, std::string online_users_body) {
+void Session::completeAuthentication(std::string username, std::string online_users_body)
+{
     const auto self = shared_from_this();
 
-    asio::post(m_strand,[self, username = std::move(username),
-            online_users_body = std::move(online_users_body), this]() mutable
+    asio::post(m_strand, [self, username = std::move(username), online_users_body = std::move(online_users_body),
+                          this]() mutable {
+        if (m_disconnected || !m_authentication_pending || m_close_after_write)
         {
-           if (m_disconnected || !m_authentication_pending || m_close_after_write) {
-               return;
-           }
-            if (online_users_body.size() > protocol::kMaxFrameBodyLength) {
-                self->closeOnStrand();
-                return;
-            }
+            return;
+        }
+        if (online_users_body.size() > protocol::kMaxFrameBodyLength)
+        {
+            self->closeOnStrand();
+            return;
+        }
 
-            cancelAuthenticationDeadlineOnStrand();
+        cancelAuthenticationDeadlineOnStrand();
 
-            m_username = std::move(username);
-            m_authenticated =true;
-            m_authentication_pending = false;
-            enqueueAndWrite(protocol::MessageType::auth, "{\"ok\":true}");
-            enqueueAndWrite(protocol::MessageType::online_users, online_users_body);
-        });
-
+        m_username = std::move(username);
+        m_authenticated = true;
+        m_authentication_pending = false;
+        enqueueAndWrite(protocol::MessageType::auth, "{\"ok\":true}");
+        enqueueAndWrite(protocol::MessageType::online_users, online_users_body);
+    });
 }
 
 // 功能：接收 Server 已确认有效的拒绝错误正文，写完 error 帧后再关闭会话。
 // 边界：错误正文超过帧上限时保护性关闭；会话不再等待准入时直接忽略请求。
-void Session::rejectAuthentication(std::string error_body,std::string error_code) {
+void Session::rejectAuthentication(std::string error_body, std::string error_code)
+{
     const auto self = shared_from_this();
 
-    asio::post(m_strand,
-        [self,error_body = std::move(error_body),
-                error_code = std::move(error_code)]() mutable {
+    asio::post(m_strand, [self, error_body = std::move(error_body), error_code = std::move(error_code)]() mutable {
         self->rejectAuthenticationOnStrand(error_body, error_code);
-    }) ;
+    });
 }
 
-void Session::startAuthenticationDeadlineOnStrand() {
+void Session::startAuthenticationDeadlineOnStrand()
+{
     m_authentication_timer.expires_after(m_authentication_timeout);
 
     const auto self = shared_from_this();
 
-    m_authentication_timer.async_wait(
-        asio::bind_executor(m_strand,[self](const std::error_code& error) {
-            self->handleAuthenticationDeadlineOnStrand(error);
-        }));
+    m_authentication_timer.async_wait(asio::bind_executor(
+        m_strand, [self](const std::error_code &error) { self->handleAuthenticationDeadlineOnStrand(error); }));
 }
 
-void Session::cancelAuthenticationDeadlineOnStrand() {
+void Session::cancelAuthenticationDeadlineOnStrand()
+{
     m_authentication_timer.cancel();
 }
 
-void Session::handleAuthenticationDeadlineOnStrand(const std::error_code &error) {
+void Session::handleAuthenticationDeadlineOnStrand(const std::error_code &error)
+{
     // 定时器被主动取消，不是真正的认证超时
-    if (error == asio::error::operation_aborted) {
+    if (error == asio::error::operation_aborted)
+    {
         return;
     }
-    if (error) {
+    if (error)
+    {
         log("auth", "authentication_deadline_wait_failed", "timer_wait_failed");
         closeOnStrand();
         return;
     }
 
     // Session 已经进入其他终态，不再处理认证超时
-    if (m_disconnected || m_authenticated || m_close_after_write) {
+    if (m_disconnected || m_authenticated || m_close_after_write)
+    {
         return;
     }
     // 保持“等待认证结论”状态，并把终态裁决交给 Server strand。
     m_authentication_pending = true;
 
-    if (m_on_authentication_timeout) {
+    if (m_on_authentication_timeout)
+    {
         m_on_authentication_timeout(m_id);
-    }else {
+    }
+    else
+    {
         closeOnStrand();
     }
 }
 
-void Session::rejectAuthenticationOnStrand(const std::string& error_body,const std::string& error_code)
+void Session::rejectAuthenticationOnStrand(const std::string &error_body, const std::string &error_code)
 {
-    if (m_disconnected || !m_authentication_pending || m_close_after_write) {
+    if (m_disconnected || !m_authentication_pending || m_close_after_write)
+    {
         return;
     }
-    if (error_body.size() > protocol::kMaxFrameBodyLength) {
+    if (error_body.size() > protocol::kMaxFrameBodyLength)
+    {
         closeOnStrand();
         return;
     }
@@ -174,62 +176,69 @@ void Session::rejectAuthenticationOnStrand(const std::string& error_body,const s
 // ==================== 模块：异步读取与帧解码 ====================
 // 功能：异步读取 Socket 数据，解码完整帧并递归安排下一次读取。
 // 失败：读取错误或协议错误时关闭会话，触发 Server 的在线表清理回调。
-void Session::doRead() {
+void Session::doRead()
+{
     const auto self = shared_from_this();
     m_socket.async_read_some(
         asio::buffer(m_read_buffer),
-        asio::bind_executor(
-            m_strand,
-            // 功能：处理本次读取结果、协议解码结果并决定是否继续读取。
-            [self, this](const std::error_code error, const std::size_t bytes_transferred) {
-                if (error) {
-                    if (error == asio::error::eof) {
-                        self->log("read", "peer_disconnected", "normal_disconnect");
-                    } else if (error == asio::error::operation_aborted) {
-                        return;
-                    } else {
-                        self->log("read", "socket_read_failed", "socket_read_failed");
-                    }
-                    self->closeOnStrand();
-                    return;
-                }
-                const auto result = m_decoder.append(
-                    m_read_buffer.data(), bytes_transferred,
-                    // 功能：将每条完整协议消息交给当前会话的业务分派函数。
-                    [self](const protocol::Message& message) {
-                        self->handlerMessage(message);
-                    });
-                if (result != protocol::DecodeResult::ok) {
-                    log("read", "frame_decode_rejected", "frame_decode_failed");
-                    self->closeOnStrand();
-                    return;
-                }
+        asio::bind_executor(m_strand,
+                            // 功能：处理本次读取结果、协议解码结果并决定是否继续读取。
+                            [self, this](const std::error_code error, const std::size_t bytes_transferred) {
+                                if (error)
+                                {
+                                    if (error == asio::error::eof)
+                                    {
+                                        self->log("read", "peer_disconnected", "normal_disconnect");
+                                    }
+                                    else if (error == asio::error::operation_aborted)
+                                    {
+                                        return;
+                                    }
+                                    else
+                                    {
+                                        self->log("read", "socket_read_failed", "socket_read_failed");
+                                    }
+                                    self->closeOnStrand();
+                                    return;
+                                }
+                                const auto result = m_decoder.append(
+                                    m_read_buffer.data(), bytes_transferred,
+                                    // 功能：将每条完整协议消息交给当前会话的业务分派函数。
+                                    [self](const protocol::Message &message) { self->handlerMessage(message); });
+                                if (result != protocol::DecodeResult::ok)
+                                {
+                                    log("read", "frame_decode_rejected", "frame_decode_failed");
+                                    self->closeOnStrand();
+                                    return;
+                                }
 
-                self->doRead();
-            }));
+                                self->doRead();
+                            }));
 }
 
 // ==================== 模块：串行写队列 ====================
 // 功能：校验正文大小后将完整帧放入队列；空队列首次入队时启动异步写。
-void Session::enqueueAndWrite(const protocol::MessageType type, const std::string& body,
-                              const bool allow_terminal_overflow) {
-    if (body.size() > protocol::kMaxFrameBodyLength) {
-        log("write", "outbound_frame_rejected", "frame_body_too_large",
-            body.size(),protocol::kMaxFrameBodyLength);
+void Session::enqueueAndWrite(const protocol::MessageType type, const std::string &body,
+                              const bool allow_terminal_overflow)
+{
+    if (body.size() > protocol::kMaxFrameBodyLength)
+    {
+        log("write", "outbound_frame_rejected", "frame_body_too_large", body.size(), protocol::kMaxFrameBodyLength);
         return;
     }
 
     const bool was_empty = m_write_queue.empty();
-    if (m_write_queue.size() >= kMaxWriteQueueSize && !allow_terminal_overflow) {
-        log("write", "slow_client_disconnected", "write_queue_full",
-            m_write_queue.size(),kMaxWriteQueueSize);
+    if (m_write_queue.size() >= kMaxWriteQueueSize && !allow_terminal_overflow)
+    {
+        log("write", "slow_client_disconnected", "write_queue_full", m_write_queue.size(), kMaxWriteQueueSize);
 
         closeOnStrand();
         return;
     }
 
     m_write_queue.push_back({type, protocol::makeFrame(type, body)});
-    if (was_empty) {
+    if (was_empty)
+    {
         writeFrame();
     }
 }
@@ -237,91 +246,104 @@ void Session::enqueueAndWrite(const protocol::MessageType type, const std::strin
 // 功能：异步写出队首帧；写入成功后移除队首并继续处理剩余队列。
 //       若认证拒绝要求写完后关闭，则只在队列排空后执行关闭。
 // 失败：写入失败时关闭会话，避免继续向失效 Socket 发送数据。
-void Session::writeFrame() {
-    if (m_write_queue.empty()) {
+void Session::writeFrame()
+{
+    if (m_write_queue.empty())
+    {
         return;
     }
 
     const auto self = shared_from_this();
     asio::async_write(
         m_socket, asio::buffer(m_write_queue.front().frame),
-        asio::bind_executor(
-            m_strand,
-            // 功能：处理当前队首帧的写入结果，并按顺序继续下一个帧。
-            [self, this](const std::error_code error, const std::size_t bytes_transferred) {
-                if (error) {
-                    self->log("write", "socket_write_failed", "socket_write_failed");
-                    self->closeOnStrand();
-                    return;
-                }
+        asio::bind_executor(m_strand,
+                            // 功能：处理当前队首帧的写入结果，并按顺序继续下一个帧。
+                            [self, this](const std::error_code error, const std::size_t bytes_transferred) {
+                                if (error)
+                                {
+                                    self->log("write", "socket_write_failed", "socket_write_failed");
+                                    self->closeOnStrand();
+                                    return;
+                                }
 
-                m_write_queue.pop_front();
+                                m_write_queue.pop_front();
 
-                if (m_write_queue.empty()) {
-                    if (self->m_close_after_write) {
-                        // error 已写完且队列排空；此时才可关闭 Socket，不能截断错误帧。
-                        self->closeOnStrand();
-                        return;
-                    }
-                    self->startNextHistoryResultBody();
-                }else {
-                    self->writeFrame();
-                }
-            }));
+                                if (m_write_queue.empty())
+                                {
+                                    if (self->m_close_after_write)
+                                    {
+                                        // error 已写完且队列排空；此时才可关闭 Socket，不能截断错误帧。
+                                        self->closeOnStrand();
+                                        return;
+                                    }
+                                    self->startNextHistoryResultBody();
+                                }
+                                else
+                                {
+                                    self->writeFrame();
+                                }
+                            }));
 }
 // 功能：从挂起列表中取出下一个历史结果正文并发送
-void Session::startNextHistoryResultBody() {
-    if (!m_write_queue.empty() || m_pending_history_result_bodies.empty()) {
+void Session::startNextHistoryResultBody()
+{
+    if (!m_write_queue.empty() || m_pending_history_result_bodies.empty())
+    {
         return;
     }
     const std::string body = std::move(m_pending_history_result_bodies.front());
     m_pending_history_result_bodies.pop_front();
-    enqueueAndWrite(protocol::MessageType::history_result,body);
+    enqueueAndWrite(protocol::MessageType::history_result, body);
 }
 
 // ==================== 模块：认证与业务消息分派 ====================
 // 功能：使用服务端密钥验证 HS256 令牌，并从载荷中提取用户名。
 // 失败：令牌解码、签名校验或用户名提取抛出异常时返回 false。
- Session::JwtVerificationResult Session::verifyJwt(const std::string &token, std::string &out_username)
+Session::JwtVerificationResult Session::verifyJwt(const std::string &token, std::string &out_username)
 {
-    try {
+    try
+    {
         const auto decoded = jwt::decode(token);
         const auto verifier = jwt::verify().allow_algorithm(jwt::algorithm::hs256{SECRET_KEY});
         verifier.verify(decoded);
-        try {
+        try
+        {
             const auto username = decoded.get_payload_claim("username").as_string();
 
-            if (!protocol::isValidUsername(username)) {
+            if (!protocol::isValidUsername(username))
+            {
                 return JwtVerificationResult::invalid_username_claim;
             }
             out_username = username;
             return JwtVerificationResult::accepted;
         }
-        catch (const std::exception&) {
+        catch (const std::exception &)
+        {
             return JwtVerificationResult::invalid_username_claim;
         }
-
-    } catch (const std::exception&) {
+    }
+    catch (const std::exception &)
+    {
         return JwtVerificationResult::invalid_token;
     }
-
-
 }
 
 // 功能：构造包含聊天错误范围、错误码、错误说明和可选 local_id 的 JSON 正文。
-std::string Session::makeChatError(const std::string& local_id, const std::string& code,
-                                   const std::string& message) {
+std::string Session::makeChatError(const std::string &local_id, const std::string &code, const std::string &message)
+{
     boost::json::object object;
     object["scope"] = "chat";
     object["code"] = code;
     object["message"] = message;
-    if (!local_id.empty()) {
+    if (!local_id.empty())
+    {
         object["local_id"] = local_id;
     }
     return boost::json::serialize(object);
 }
 
-std::string Session::makeAuthError(const std::string &code, const std::string &message) {
+std::string Session::makeAuthError(const std::string &code, const std::string &message)
+{
     boost::json::object object;
     object["scope"] = "auth";
     object["code"] = code;
@@ -333,14 +355,17 @@ std::string Session::makeAuthError(const std::string &code, const std::string &m
 // 功能：在未认证时只处理认证帧；认证完成后分派聊天、心跳和错误帧。
 //       若拒绝错误正在发送，则不再处理任何新入站帧。
 // 失败：令牌无效、未认证发送业务帧或聊天正文校验失败时关闭会话或返回错误帧。
-void Session::handlerMessage(const protocol::Message& message) {
-    if (m_close_after_write) {
+void Session::handlerMessage(const protocol::Message &message)
+{
+    if (m_close_after_write)
+    {
         // 已决定发送拒绝错误并关闭；忽略后续入站帧，防止提前关闭而截断 error。
         return;
     }
 
-    if (m_authentication_pending) {
-        log("auth", "additional_frame_ignored","authentication_pending");
+    if (m_authentication_pending)
+    {
+        log("auth", "additional_frame_ignored", "authentication_pending");
         return;
     }
 
@@ -352,13 +377,16 @@ void Session::handlerMessage(const protocol::Message& message) {
             const auto verification = verifyJwt(message.body, username);
             if (verification == JwtVerificationResult::accepted)
             {
-                //是拒绝发送期间的生命周期状态：它不表示认证成功，
-                //而是阻止该连接继续处理业务帧，直到 error 写完并关闭。
+                // 是拒绝发送期间的生命周期状态：它不表示认证成功，
+                // 而是阻止该连接继续处理业务帧，直到 error 写完并关闭。
                 m_authentication_pending = true;
 
-                if (on_authentication_requested) {
+                if (on_authentication_requested)
+                {
                     on_authentication_requested(m_id, username);
-                }else {
+                }
+                else
+                {
                     closeOnStrand();
                 }
                 return;
@@ -366,43 +394,44 @@ void Session::handlerMessage(const protocol::Message& message) {
             if (verification == JwtVerificationResult::invalid_username_claim)
             {
                 m_authentication_pending = true;
-                rejectAuthenticationOnStrand(
-                    makeAuthError("invalid_username_claim", "JWT 用户名不合法"),
-                    "invalid_username_claim");
+                rejectAuthenticationOnStrand(makeAuthError("invalid_username_claim", "JWT 用户名不合法"),
+                                             "invalid_username_claim");
                 return;
             }
-            log("auth","authentication_rejected","jwt_verification_failed");
+            log("auth", "authentication_rejected", "jwt_verification_failed");
             closeOnStrand();
             return;
         }
 
         // 心跳不是认证行为：忽略它但不重置认证截止。
-        if (message.type == protocol::MessageType::ping ||
-            message.type == protocol::MessageType::pong) {
+        if (message.type == protocol::MessageType::ping || message.type == protocol::MessageType::pong)
+        {
             log("auth", "heartbeat_ignored", "unauthenticated_heartbeat");
             return;
         }
 
         if (message.type == protocol::MessageType::history_query)
         {
-            send(protocol::MessageType::error,
-                makeHistoryError("authentication_required","历史查询需要先完成认证"));
+            send(protocol::MessageType::error, makeHistoryError("authentication_required", "历史查询需要先完成认证"));
         }
-        else {
-            send(protocol::MessageType::error,
-                makeChatError("", "authentication_required", "未认证"));
+        else
+        {
+            send(protocol::MessageType::error, makeChatError("", "authentication_required", "未认证"));
             closeOnStrand();
         }
         return;
     }
 
-    switch (message.type) {
+    switch (message.type)
+    {
     case protocol::MessageType::chat: {
         const auto result = protocol::parseChatPayload(message.body);
-        if (result.error != protocol::ChatPayloadError::none) {
+        if (result.error != protocol::ChatPayloadError::none)
+        {
             std::string error_message = "聊天消息校验失败";
             std::string error_code = "chat_validation_failed";
-            switch (result.error) {
+            switch (result.error)
+            {
             case protocol::ChatPayloadError::none:
                 break;
             case protocol::ChatPayloadError::invalid_json:
@@ -474,8 +503,7 @@ void Session::handlerMessage(const protocol::Message& message) {
                 error_code = "send_at_too_long";
                 break;
             }
-            send(protocol::MessageType::error,
-                 makeChatError(result.local_id, error_code, error_message));
+            send(protocol::MessageType::error, makeChatError(result.local_id, error_code, error_message));
             break;
         }
         m_on_message(m_id, message);
@@ -498,94 +526,96 @@ void Session::handlerMessage(const protocol::Message& message) {
         break;
     case protocol::MessageType::online_users:
         break;
-        case protocol::MessageType::history_query: {
-            const auto result = protocol::parseHistoryQueryPayload(message.body);
+    case protocol::MessageType::history_query: {
+        const auto result = protocol::parseHistoryQueryPayload(message.body);
 
-            if (result.error != protocol::HistoryQueryPayloadError::none)
+        if (result.error != protocol::HistoryQueryPayloadError::none)
+        {
+            std::string error_code = "history_validation_failed";
+            std::string error_message = "历史查询消息校验失败";
+
+            switch (result.error)
             {
-                std::string error_code = "history_validation_failed";
-                std::string error_message = "历史查询消息校验失败";
-
-                switch (result.error) {
-                    case protocol::HistoryQueryPayloadError::none:
-                        break;
-                    case protocol::HistoryQueryPayloadError::invalid_json:
-                        error_code = "invalid_json";
-                        error_message = "历史查询 JSON 格式错误";
-                        break;
-                    case protocol::HistoryQueryPayloadError::forbidden_identity_field:
-                        error_code = "forbidden_identity_field";
-                        error_message = "历史查询消息包含禁止的 identity 字段";
-                        break;
-                    case protocol::HistoryQueryPayloadError::missing_request_id:
-                        error_code = "missing_request_id";
-                        error_message = "历史查询消息缺少 request_id";
-                        break;
-                    case protocol::HistoryQueryPayloadError::request_id_not_string:
-                        error_code = "request_id_not_string";
-                        error_message = "历史查询消息的 request_id 必须是字符串";
-                        break;
-                    case protocol::HistoryQueryPayloadError::blank_request_id:
-                        error_code = "blank_request_id";
-                        error_message = "历史查询消息的 request_id 不能为空";
-                        break;
-                    case protocol::HistoryQueryPayloadError::request_id_too_long:
-                        error_code = "request_id_too_long";
-                        error_message = "历史查询消息的 request_id 不能超过 64 字节";
-                        break;
-                    case protocol::HistoryQueryPayloadError::missing_limit:
-                        error_code = "missing_limit";
-                        error_message = "历史查询消息缺少 limit";
-                        break;
-                    case protocol::HistoryQueryPayloadError::limit_not_integer:
-                        error_code = "limit_not_integer";
-                        error_message = "历史查询消息的 limit 必须是整数";
-                        break;
-                    case protocol::HistoryQueryPayloadError::before_not_object:
-                        error_code = "before_not_object";
-                        error_message = "历史查询消息的 before 必须是对象";
-                        break;
-                    case protocol::HistoryQueryPayloadError::missing_before_timestamp:
-                        error_code = "missing_before_timestamp";
-                        error_message = "历史查询消息缺少 before.timestamp";
-                        break;
-                    case protocol::HistoryQueryPayloadError::before_timestamp_not_integer:
-                        error_code = "before_timestamp_not_integer";
-                        error_message = "历史查询消息的 before.timestamp 必须是整数";
-                        break;
-                    case protocol::HistoryQueryPayloadError::negative_before_timestamp:
-                        error_code = "negative_before_timestamp";
-                        error_message = "历史查询消息的 before.timestamp 不能为负数";
-                        break;
-                    case protocol::HistoryQueryPayloadError::missing_before_message_id:
-                        error_code = "missing_before_message_id";
-                        error_message = "历史查询消息缺少 before.message_id";
-                        break;
-                    case protocol::HistoryQueryPayloadError::before_message_id_not_string:
-                        error_code = "before_message_id_not_string";
-                        error_message = "历史查询消息的 before.message_id 必须是字符串";
-                        break;
-                    case protocol::HistoryQueryPayloadError::blank_before_message_id:
-                        error_code = "blank_before_message_id";
-                        error_message = "历史查询消息的 before.message_id 不能为空";
-                        break;
-                    case protocol::HistoryQueryPayloadError::before_message_id_too_long:
-                        error_code = "before_message_id_too_long";
-                        error_message = "历史查询消息的 before.message_id 不能超过 64 字节";
-                        break;
-                }
-                send(protocol::MessageType::error,makeHistoryError(error_code,error_message));
+            case protocol::HistoryQueryPayloadError::none:
+                break;
+            case protocol::HistoryQueryPayloadError::invalid_json:
+                error_code = "invalid_json";
+                error_message = "历史查询 JSON 格式错误";
+                break;
+            case protocol::HistoryQueryPayloadError::forbidden_identity_field:
+                error_code = "forbidden_identity_field";
+                error_message = "历史查询消息包含禁止的 identity 字段";
+                break;
+            case protocol::HistoryQueryPayloadError::missing_request_id:
+                error_code = "missing_request_id";
+                error_message = "历史查询消息缺少 request_id";
+                break;
+            case protocol::HistoryQueryPayloadError::request_id_not_string:
+                error_code = "request_id_not_string";
+                error_message = "历史查询消息的 request_id 必须是字符串";
+                break;
+            case protocol::HistoryQueryPayloadError::blank_request_id:
+                error_code = "blank_request_id";
+                error_message = "历史查询消息的 request_id 不能为空";
+                break;
+            case protocol::HistoryQueryPayloadError::request_id_too_long:
+                error_code = "request_id_too_long";
+                error_message = "历史查询消息的 request_id 不能超过 64 字节";
+                break;
+            case protocol::HistoryQueryPayloadError::missing_limit:
+                error_code = "missing_limit";
+                error_message = "历史查询消息缺少 limit";
+                break;
+            case protocol::HistoryQueryPayloadError::limit_not_integer:
+                error_code = "limit_not_integer";
+                error_message = "历史查询消息的 limit 必须是整数";
+                break;
+            case protocol::HistoryQueryPayloadError::before_not_object:
+                error_code = "before_not_object";
+                error_message = "历史查询消息的 before 必须是对象";
+                break;
+            case protocol::HistoryQueryPayloadError::missing_before_timestamp:
+                error_code = "missing_before_timestamp";
+                error_message = "历史查询消息缺少 before.timestamp";
+                break;
+            case protocol::HistoryQueryPayloadError::before_timestamp_not_integer:
+                error_code = "before_timestamp_not_integer";
+                error_message = "历史查询消息的 before.timestamp 必须是整数";
+                break;
+            case protocol::HistoryQueryPayloadError::negative_before_timestamp:
+                error_code = "negative_before_timestamp";
+                error_message = "历史查询消息的 before.timestamp 不能为负数";
+                break;
+            case protocol::HistoryQueryPayloadError::missing_before_message_id:
+                error_code = "missing_before_message_id";
+                error_message = "历史查询消息缺少 before.message_id";
+                break;
+            case protocol::HistoryQueryPayloadError::before_message_id_not_string:
+                error_code = "before_message_id_not_string";
+                error_message = "历史查询消息的 before.message_id 必须是字符串";
+                break;
+            case protocol::HistoryQueryPayloadError::blank_before_message_id:
+                error_code = "blank_before_message_id";
+                error_message = "历史查询消息的 before.message_id 不能为空";
+                break;
+            case protocol::HistoryQueryPayloadError::before_message_id_too_long:
+                error_code = "before_message_id_too_long";
+                error_message = "历史查询消息的 before.message_id 不能超过 64 字节";
                 break;
             }
-            // 到这里说明请求体已经通过协议校验。
-            m_on_message(m_id,message);
+            send(protocol::MessageType::error, makeHistoryError(error_code, error_message));
             break;
         }
-    default: ;
+        // 到这里说明请求体已经通过协议校验。
+        m_on_message(m_id, message);
+        break;
+    }
+    default:;
     }
 }
 
-std::string Session::makeHistoryError(const std::string &code, const std::string &message) {
+std::string Session::makeHistoryError(const std::string &code, const std::string &message)
+{
     boost::json::object object;
     object["scope"] = "history";
     object["code"] = code;
@@ -594,18 +624,19 @@ std::string Session::makeHistoryError(const std::string &code, const std::string
     return boost::json::serialize(object);
 }
 
-
 // ==================== 模块：关闭与日志 ====================
 // 功能：仅第一次调用时标记会话已断开，并通知 Server 清理对应会话记录。
-void Session::closeOnStrand() {
-    if (m_disconnected) {
+void Session::closeOnStrand()
+{
+    if (m_disconnected)
+    {
         return;
     }
     m_disconnected = true;
 
     cancelAuthenticationDeadlineOnStrand();
 
-    //优雅地关闭 socket
+    // 优雅地关闭 socket
     std::error_code ignored_error;
     m_socket.shutdown(asio::ip::tcp::socket::shutdown_both, ignored_error);
     m_socket.close(ignored_error);
@@ -615,19 +646,18 @@ void Session::closeOnStrand() {
 
 // 功能：统一输出会话生命周期与协议处理日志。
 void Session::log(std::string_view phase, std::string_view event, std::string_view code,
-    std::optional<std::size_t> actual,std::optional<std::size_t> limit) const
+                  std::optional<std::size_t> actual, std::optional<std::size_t> limit) const
 {
-    //1.先在局部变量中拼完整条日志
+    // 1.先在局部变量中拼完整条日志
     std::ostringstream oss;
-    oss << "session_id=" << m_id
-        << " phase=" << phase
-        << " event=" << event
-        << " code=" << code;
+    oss << "session_id=" << m_id << " phase=" << phase << " event=" << event << " code=" << code;
     // 2. optional 有值时才输出
-    if (actual.has_value() ) {
+    if (actual.has_value())
+    {
         oss << " actual=" << *actual;
     }
-    if (limit.has_value() ) {
+    if (limit.has_value())
+    {
         oss << " limit=" << *limit;
     }
     // 3. 函数内 static：所有 log() 调用共享同一把锁
@@ -640,4 +670,4 @@ void Session::log(std::string_view phase, std::string_view event, std::string_vi
     }
 }
 
-} // net 命名空间结束
+} // namespace net
