@@ -59,6 +59,7 @@ struct NewMessage
     std::string client_send_at;
     std::string client_local_id;
     std::int64_t server_received_at_ms;
+    std::string message_id;
 };
 
 class IMessageRepository

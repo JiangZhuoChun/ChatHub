@@ -3,12 +3,15 @@
 #include "protocol/chat_payload.h"
 
 #include <boost/json.hpp>
+#include <openssl/rand.h>
 
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <utility>
 #include <vector>
+#include <array>
+#include <optional>
 namespace
 {
 
@@ -109,7 +112,29 @@ std::string makeAuthenticationTimeoutErrorBody()
     obj["message"] = "认证超时";
     return boost::json::serialize(obj);
 }
-} // namespace
+
+std::optional<std::string> generateMessageId()
+{
+    constexpr char kHexDigits[] = "0123456789ABCDEF";
+    std::array<unsigned char,16> random_bytes{};
+
+    if (RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size())) != 1)
+    {
+        return std::nullopt;
+    }
+
+    std::string message_id;
+    message_id.reserve(random_bytes.size() * 2);
+
+    for (const unsigned char byte : random_bytes)
+    {
+        message_id.push_back(kHexDigits[byte >> 4]);
+        message_id.push_back(kHexDigits[byte & 0x0F]);
+    }
+
+    return message_id;
+}
+}// namespace
 
 namespace net
 {
@@ -337,7 +362,7 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message &mess
         sender_it->second->send(protocol::MessageType::error, error_body);
         return;
     }
-    // 8. SQLite 插入并提交
+    // 8. 生成候选持久身份并交给 Repository 写入
     std::string sender = sender_username_it->second;
     std::string recipient = payload.to;
     std::string content = payload.content;
@@ -347,7 +372,17 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message &mess
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
             .count();
 
-    repository::NewMessage msg{sender, recipient, content, send_at, local_id, now_ms};
+    const auto candidate_message_id = generateMessageId();
+    if (!candidate_message_id.has_value())
+    {
+        std::cerr << "message_id_generation_failed\n";
+        sender_it->second->send(protocol::MessageType::error,
+            makeRouteErrorBody(payload.local_id, "database_write_failed", "数据库错误"));
+        return;
+    }
+
+    repository::NewMessage msg{sender, recipient, content,
+                            send_at, local_id, now_ms, *candidate_message_id};
     auto outcome = m_message_repository->storeMessage(msg);
     switch (outcome.result)
     {
@@ -371,7 +406,7 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message &mess
                                 makeRouteErrorBody(payload.local_id, "database_write_failed", "数据库错误"));
         return;
     }
-    // 9. 以本次持久化生成的 message_id 登记待送达记录，避免回执关联到其他消息。
+    // 9. 以本次持久化返回的 message_id 登记待送达记录，避免回执关联到其他消息。
     if (!rememberPendingDelivery(outcome.message_id, sender_username_it->second, sender_id, payload.local_id,
                                  payload.to))
     {

@@ -15,7 +15,7 @@ using ContractTest = bool (*)(IMessageRepository &repository);
 bool testHistoryQueryContract(IMessageRepository &repository)
 {
     const auto store_message = [&repository](const char *sender, const char *recipient, const char *local_id,
-                                             const char *content, const char *client_send_at,
+                                             const char *content, const char *client_send_at, const char *message_id,
                                              const std::int64_t received_at_ms) {
         NewMessage message;
         message.sender = sender;
@@ -23,15 +23,21 @@ bool testHistoryQueryContract(IMessageRepository &repository)
         message.client_local_id = local_id;
         message.content = content;
         message.client_send_at = client_send_at;
+        message.message_id = message_id;
         message.server_received_at_ms = received_at_ms;
         return repository.storeMessage(message).result == StoreResult::Stored;
     };
 
-    if (!store_message("Alice", "Bob", "alice-local-001", "message at 1000", "client-time-1000-a", 1000) ||
-        !store_message("Alice", "Bob", "alice-local-002", "first message at 2000", "client-time-2000-b", 2000) ||
-        !store_message("Alice", "Bob", "alice-local-003", "second message at 2000", "client-time-2000-c", 2000) ||
-        !store_message("Bob", "Alice", "bob-local-001", "third message at 2000", "client-time-2000-d", 2000) ||
-        !store_message("Carol", "Dave", "carol-local-001", "unrelated message", "client-time-3000", 3000))
+    if (!store_message("Alice", "Bob", "alice-local-001", "message at 1000", "client-time-1000-a",
+                       "00000000000000000000000000000001", 1000) ||
+        !store_message("Alice", "Bob", "alice-local-002", "first message at 2000", "client-time-2000-b",
+                       "00000000000000000000000000000002", 2000) ||
+        !store_message("Alice", "Bob", "alice-local-003", "second message at 2000", "client-time-2000-c",
+                       "00000000000000000000000000000003", 2000) ||
+        !store_message("Bob", "Alice", "bob-local-001", "third message at 2000", "client-time-2000-d",
+                       "00000000000000000000000000000004", 2000) ||
+        !store_message("Carol", "Dave", "carol-local-001", "unrelated message", "client-time-3000",
+                       "00000000000000000000000000000005", 3000))
     {
         std::cerr << "历史合同测试的准备消息写入失败\n";
         return false;
@@ -121,19 +127,21 @@ bool testStoreIdempotencyContract(IMessageRepository &repository)
     first_message.content = "只应保存一次";
     first_message.client_send_at = "2026-08-17T12:00:00.000Z";
     first_message.server_received_at_ms = 1000;
+    first_message.message_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     const StoreOutcome first_outcome = repository.storeMessage(first_message);
-    if (first_outcome.result != StoreResult::Stored || first_outcome.message_id.empty())
+    if (first_outcome.result != StoreResult::Stored || first_outcome.message_id != first_message.message_id)
     {
-        std::cerr << "首次写入没有返回 Stored 和持久 message_id\n";
+        std::cerr << "首次写入没有保存并返回候选 message_id\n";
         return false;
     }
 
     NewMessage replayed_message = first_message;
     replayed_message.server_received_at_ms = 2000;
+    replayed_message.message_id = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
     const StoreOutcome replayed_outcome = repository.storeMessage(replayed_message);
     if (replayed_outcome.result != StoreResult::DuplicateSame ||
-        replayed_outcome.message_id != first_outcome.message_id ||
+        replayed_outcome.message_id != first_message.message_id ||
         replayed_outcome.server_received_at_ms != first_outcome.server_received_at_ms)
     {
         std::cerr << "完全重复请求没有复用原持久记录\n";
@@ -142,6 +150,7 @@ bool testStoreIdempotencyContract(IMessageRepository &repository)
 
     NewMessage conflicting_message = first_message;
     conflicting_message.content = "同一 local_id 但正文不同";
+    conflicting_message.message_id = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
     const StoreOutcome conflict_outcome = repository.storeMessage(conflicting_message);
     if (conflict_outcome.result != StoreResult::IdempotencyConflict)
     {

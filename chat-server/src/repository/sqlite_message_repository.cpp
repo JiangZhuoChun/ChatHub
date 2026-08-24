@@ -104,6 +104,11 @@ bool SqliteMessageRepository::open(const std::string &db_path)
 //       IdempotencyConflict（同一 local_id 但内容不同）/ DatabaseError。
 StoreOutcome SqliteMessageRepository::storeMessage(const NewMessage &message)
 {
+    if (message.message_id.empty())
+    {
+        log("missing candidate message id");
+        return StoreOutcome{StoreResult::DatabaseError};
+    }
     // ===== 第 1 步：查幂等记录（sender + client_local_id）=====
     sqlite3_stmt *stmt = nullptr;
     const auto *sql = R"(
@@ -166,25 +171,8 @@ StoreOutcome SqliteMessageRepository::storeMessage(const NewMessage &message)
         return StoreOutcome{StoreResult::IdempotencyConflict};
     }
 
-    // ===== 第 3 步：无旧记录 → 生成 message_id 并插入新消息 =====
-    // 生成持久业务 ID：SQLite 随机 16 字节转 32 位 hex 字符串
-    sqlite3_stmt *id_smst = nullptr;
-    if (sqlite3_prepare_v2(m_db, "SELECT hex(randomblob(16))", -1, &id_smst, nullptr) != SQLITE_OK)
-    {
-        sqlite3_finalize(stmt);
-        log("failed to prepare message_id statement");
-        return StoreOutcome{StoreResult::DatabaseError};
-    }
-    if (sqlite3_step(id_smst) != SQLITE_ROW)
-    {
-        sqlite3_finalize(id_smst);
-        sqlite3_finalize(stmt);
-        log("failed to generate message_id");
-        return StoreOutcome{StoreResult::DatabaseError};
-    }
-    const auto *new_id = reinterpret_cast<const char *>(sqlite3_column_text(id_smst, 0));
-    const std::string message_id = new_id ? new_id : "";
-    sqlite3_finalize(id_smst);
+    // 无既有幂等记录：持久化 Server 已生成的候选 ID。
+    const std::string& message_id = message.message_id;
 
     // 会话归属：两个用户名按字典序，low 在前 high 在后（服务端算，不信客户端）
     const std::string low = (message.sender < message.recipient) ? message.sender : message.recipient;

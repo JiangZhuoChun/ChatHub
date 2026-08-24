@@ -4,6 +4,8 @@ find_package(SQLite3 REQUIRED)
 
 find_package(OpenSSL REQUIRED)
 
+find_package(Threads REQUIRED)
+
 find_package(unofficial-libmariadb CONFIG REQUIRED)
 # CMake 4.3 新增 SQLite3::SQLite3；旧版仅提供 SQLite::SQLite3。
 if (NOT TARGET SQLite3::SQLite3 AND TARGET SQLite::SQLite3)
@@ -50,7 +52,9 @@ add_executable(chat-server
         src/repository/sqlite_message_repository.cpp
         src/repository/mysql_connection_config.cpp
         src/repository/mysql_connection.cpp
+        src/repository/mysql_message_repository.cpp
         app/server_runtime_config.cpp
+        app/message_repository_factory.cpp
 )
 configure_chat_server_target(chat-server)
 target_include_directories(chat-server PRIVATE
@@ -145,6 +149,7 @@ register_chat_server_test(server_runtime_config_test)
 
 add_executable(server_process_config_test
         examples/server_process_config_test.cpp
+        src/protocol/frame_decoder.cpp
 )
 configure_chat_server_target(server_process_config_test)
 target_link_libraries(server_process_config_test PRIVATE
@@ -153,6 +158,42 @@ target_link_libraries(server_process_config_test PRIVATE
 add_dependencies(server_process_config_test chat-server)
 add_test(NAME server_process_config_test
         COMMAND $<TARGET_FILE:server_process_config_test> $<TARGET_FILE:chat-server>
+)
+
+add_test(NAME mysql_server_process_startup_test
+        COMMAND $<TARGET_FILE:server_process_config_test> $<TARGET_FILE:chat-server> --mysql-startup
+)
+set_tests_properties(mysql_server_process_startup_test PROPERTIES
+        SKIP_RETURN_CODE 77
+        RUN_SERIAL TRUE
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+
+add_test(NAME mysql_server_process_chat_test
+        COMMAND $<TARGET_FILE:server_process_config_test> $<TARGET_FILE:chat-server> --mysql-chat
+)
+set_tests_properties(mysql_server_process_chat_test PROPERTIES
+        SKIP_RETURN_CODE 77
+        RUN_SERIAL TRUE
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+
+add_test(NAME mysql_server_process_history_test
+        COMMAND $<TARGET_FILE:server_process_config_test> $<TARGET_FILE:chat-server> --mysql-history
+)
+set_tests_properties(mysql_server_process_history_test PROPERTIES
+        SKIP_RETURN_CODE 77
+        RUN_SERIAL TRUE
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+
+add_test(NAME mysql_server_process_schema_failure_test
+        COMMAND $<TARGET_FILE:server_process_config_test> $<TARGET_FILE:chat-server> --mysql-schema-failure
+)
+set_tests_properties(mysql_server_process_schema_failure_test PROPERTIES
+        SKIP_RETURN_CODE 77
+        RUN_SERIAL TRUE
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 
 add_executable(jwt_demo
@@ -221,4 +262,111 @@ add_test(NAME mysql_connection_integration_test
 set_tests_properties(mysql_connection_integration_test PROPERTIES
         SKIP_RETURN_CODE 77
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+
+add_executable(mysql_message_repository_connection_test
+        examples/mysql_message_repository_connection_test.cpp
+        src/repository/mysql_connection_config.cpp
+        src/repository/mysql_connection.cpp
+        src/repository/mysql_message_repository.cpp
+)
+configure_chat_server_target(mysql_message_repository_connection_test)
+target_link_libraries(mysql_message_repository_connection_test PRIVATE
+        unofficial::libmariadb
+)
+add_dependencies(mysql_message_repository_connection_test chat-server)
+add_test(NAME mysql_message_repository_connection_test
+        COMMAND $<TARGET_FILE:mysql_message_repository_connection_test>
+)
+set_tests_properties(mysql_message_repository_connection_test PROPERTIES
+        SKIP_RETURN_CODE 77
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+
+add_executable(mysql_message_repository_declaration_test
+        examples/mysql_message_repository_declaration_test.cpp
+)
+configure_chat_server_target(mysql_message_repository_declaration_test)
+register_chat_server_test(mysql_message_repository_declaration_test)
+
+add_executable(mysql_message_repository_schema_test
+        examples/mysql_message_repository_schema_test.cpp
+        src/repository/mysql_connection_config.cpp
+        src/repository/mysql_connection.cpp
+        src/repository/mysql_message_repository.cpp
+)
+configure_chat_server_target(mysql_message_repository_schema_test)
+target_link_libraries(mysql_message_repository_schema_test PRIVATE
+        unofficial::libmariadb
+)
+add_dependencies(mysql_message_repository_schema_test chat-server)
+add_test(NAME mysql_message_repository_schema_test
+        COMMAND $<TARGET_FILE:mysql_message_repository_schema_test>
+)
+set_tests_properties(mysql_message_repository_schema_test PROPERTIES
+        SKIP_RETURN_CODE 77
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        RUN_SERIAL TRUE
+)
+
+add_executable(mysql_message_repository_store_test
+        examples/mysql_message_repository_store_test.cpp
+        src/repository/mysql_connection_config.cpp
+        src/repository/mysql_connection.cpp
+        src/repository/mysql_message_repository.cpp
+)
+configure_chat_server_target(mysql_message_repository_store_test)
+target_link_libraries(mysql_message_repository_store_test PRIVATE
+        unofficial::libmariadb
+        Threads::Threads
+)
+add_dependencies(mysql_message_repository_store_test chat-server)
+add_test(NAME mysql_message_repository_store_test
+        COMMAND $<TARGET_FILE:mysql_message_repository_store_test>
+)
+set_tests_properties(mysql_message_repository_store_test PROPERTIES
+        SKIP_RETURN_CODE 77
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        RUN_SERIAL TRUE
+)
+
+add_executable(mysql_message_repository_history_test
+        examples/mysql_message_repository_history_test.cpp
+        src/repository/mysql_connection_config.cpp
+        src/repository/mysql_connection.cpp
+        src/repository/mysql_message_repository.cpp
+)
+configure_chat_server_target(mysql_message_repository_history_test)
+target_link_libraries(mysql_message_repository_history_test PRIVATE
+        unofficial::libmariadb
+)
+add_dependencies(mysql_message_repository_history_test chat-server)
+add_test(NAME mysql_message_repository_history_test
+        COMMAND $<TARGET_FILE:mysql_message_repository_history_test>
+)
+set_tests_properties(mysql_message_repository_history_test PROPERTIES
+        SKIP_RETURN_CODE 77
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        RUN_SERIAL TRUE
+)
+
+add_executable(mysql_message_repository_contract_test
+        examples/mysql_message_repository_contract_test.cpp
+        examples/message_repository_contract_test_runner.cpp
+        src/repository/mysql_connection_config.cpp
+        src/repository/mysql_connection.cpp
+        src/repository/mysql_message_repository.cpp
+)
+configure_chat_server_target(mysql_message_repository_contract_test)
+target_link_libraries(mysql_message_repository_contract_test PRIVATE
+        unofficial::libmariadb
+)
+add_dependencies(mysql_message_repository_contract_test chat-server)
+add_test(NAME mysql_message_repository_contract_test
+        COMMAND $<TARGET_FILE:mysql_message_repository_contract_test>
+)
+set_tests_properties(mysql_message_repository_contract_test PROPERTIES
+        SKIP_RETURN_CODE 77
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        RUN_SERIAL TRUE
 )
