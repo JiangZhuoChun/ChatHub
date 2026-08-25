@@ -1,21 +1,30 @@
 // ==================== 模块：数据库依赖 ====================
-const Datebase = require('better-sqlite3');
+const Database = require('better-sqlite3');
 
-// ==================== 模块：数据库连接 ====================
-// 功能：打开认证服务使用的 SQLite 数据库文件。
-const db = new Datebase('auto.db');
+// ==================== 模块：用户表结构 ====================
+// 功能：让生产环境和测试环境使用完全相同的 users 表结构。
+const userSchema = [
+    'CREATE TABLE IF NOT EXISTS users (',
+    '    id INTEGER PRIMARY KEY AUTOINCREMENT,',
+    '    username TEXT NOT NULL UNIQUE,',
+    '    password TEXT NOT NULL,',
+    "    created_at TEXT DEFAULT (datetime('now'))",
+    ');'
+].join('\n');
 
-// ==================== 模块：用户表初始化 ====================
-// 功能：首次启动时创建 users 表，并保证用户名唯一、密码只保存哈希值。
-db.exec('CREATE TABLE IF NOT EXISTS users (\n' +
-    '    id INTEGER PRIMARY KEY AUTOINCREMENT,\n' +
-    '    username TEXT NOT NULL UNIQUE,\n' +
-    '    password TEXT NOT NULL,\n' +
-    '    created_at TEXT DEFAULT (datetime(\'now\'))\n' +
-    ');');
+// ==================== 模块：数据库工厂 ====================
+// 输入：SQLite 数据库文件路径。
+// 输出：已完成 users 表初始化、由调用方负责 close() 的数据库连接。
+// 边界：require 本模块不会再隐式创建 auto.db，测试可传入自己的临时路径。
+function createDatabase(databasePath) {
+    if (typeof databasePath !== 'string' || databasePath.trim().length === 0) {
+        throw new TypeError('database_path_invalid');
+    }
 
-console.log('数据库初始化完毕');
+    const db = new Database(databasePath);
+    db.exec(userSchema);
+    return db;
+}
 
-// ==================== 模块：数据库对象导出 ====================
-// 功能：向认证路由导出已初始化的数据库连接对象。
-module.exports = db;
+// ==================== 模块：数据库工厂导出 ====================
+module.exports = {createDatabase};
