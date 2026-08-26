@@ -782,6 +782,8 @@ component=auth phase=login event=rate_limited dimension=user
 - [x] 用户掌握 Auth introspection 配置解析器中 `std::optional` 成功结果与错误枚举原因的分工；
 - [x] 用户完成 Auth introspection 配置解析器的端口范围、target query/fragment、host 空白/控制字符边界，并通过独立语法检查和实际 vcpkg 构建目录的 `chat-server` 目标构建；
 - [x] 用户能解释不同 CMake 构建目录拥有独立缓存，工具链、vcpkg triplet 和依赖路径不同会产生不同配置结果；
+- [x] 用户完成 Auth introspection 环境变量读取层：`getenv()` 借用值交给统一解析器校验，缺失 timeout 使用默认值，缺失内部密钥保持 fail-closed，并通过独立语法检查和实际 `chat-server` 构建；
+- [x] 用户将拥有的 `AuthIntrospectionConfig` 注入 `net::Server`，并在 `main.cpp` 中于消息仓库创建和 HTTP 监听前执行 fail-closed 配置门禁；
 - [ ] 写明协议、API、超时、失败和旧 token 兼容；
 - [ ] 用户确认书面设计；
 - [ ] 未确认前不编码。
@@ -883,8 +885,8 @@ Git 规则：
 - `clearUserFailures()` 新鲜复验：先记录同一 username/IP 两次失败，首次清理返回 `{deleted: 1}`；随后 username 为 `count: 0`、`ttl_seconds: -2`，IP 仍为 `count: 2`、TTL `60`；重复清理返回 `{deleted: 0}`；Redis 失败映射为 `redis_unavailable`，非法删除回复映射为 `redis_data_invariant`，非法 username 映射为 `login_limiter_input_invalid`；语法和探针退出码均为 `0`。
 - `app.js` 新鲜复验：`node --check src/app.js` 退出码为 `0`；使用假的 db/limiter/bcrypt/JWT 依赖启动临时 HTTP 端口，`APP_LOGIN_MATRIX_PASS` 通过。非法输入不调用任何依赖；已限流直接返回 429 和 `Retry-After`；错误凭据按 `inspect → db → bcrypt → recordFailure` 返回 401/429；成功按 `inspect → db → bcrypt → clearUserFailures → jwt.sign` 返回 200；`inspect`、`recordFailure`、`clearUserFailures` 的 Redis 错误均返回 503，清理失败不签发 token。malformed JSON 另行验证返回 400；使用项目实际 `bcryptjs` 与 `jsonwebtoken` 的成功路径验证输出 `REAL_BCRYPT_JWT_APP_PASS`；携带伪造 `X-Forwarded-For` 仍输出 `TRUSTED_SOCKET_IP_PASS`，限流输入使用底层 socket 地址。随后仅按模块/公共入口补充中文注释，`node --check`、空白检查和最小回归仍通过。该探针不代表真实 HTTP 集成已完成。
 
-- **当前能力点**：W12-3 B（Auth introspection）生产实现进行中；ChatServer 的 introspection 配置接口和解析器源文件已创建，端口、target query/fragment、host 字符边界已修正，解析器掌握确认尚未完成；自动化测试标记为未来待实现；
-- **已完成项**：W12-1 的 R12-1-01～12 均有对应证据；W12-2 已确认 username/IP 双维度、key 所有者、400/401/429/503、fail-closed 和调用顺序；Redis client 生命周期已通过；`login_rate_limiter.js` 的 key、`inspect()`、`recordFailure()`、`clearUserFailures()`、错误码、输入边界、TTL 和并发证据均已通过；`app.js` 的依赖合同、登录顺序、错误映射和 malformed JSON 边界已有新鲜 HTTP 探针证据；`server.js` 的配置边界、Redis 启动门禁、监听 Promise、`require.main` 门禁、HTTP→Redis→SQLite 关闭顺序和失败后继续清理已有新鲜证据；运行期 Redis 断开时的有限重连、离线队列关闭、限流错误包装与 503 fail-closed 生产链路已完成概念确认；已有真实 Redis、临时 SQLite、临时 HTTP 端口的注册/登录/`/me` 联调测试已通过；ChatServer 的 `AuthIntrospectionConfig` 数据模型、配置错误枚举、`parseAuthIntrospectionConfig()` 主流程和 `authIntrospectionConfigErrorCode()` 已写入源文件；
+- **当前能力点**：W12-3 B（Auth introspection）生产实现进行中；ChatServer 的 introspection 配置接口、URL 解析器、环境变量读取层和 `Server` 配置注入已创建并通过构建，HTTP 客户端尚未实现；自动化测试标记为未来待实现；
+- **已完成项**：W12-1 的 R12-1-01～12 均有对应证据；W12-2 已确认 username/IP 双维度、key 所有者、400/401/429/503、fail-closed 和调用顺序；Redis client 生命周期已通过；`login_rate_limiter.js` 的 key、`inspect()`、`recordFailure()`、`clearUserFailures()`、错误码、输入边界、TTL 和并发证据均已通过；`app.js` 的依赖合同、登录顺序、错误映射和 malformed JSON 边界已有新鲜 HTTP 探针证据；`server.js` 的配置边界、Redis 启动门禁、监听 Promise、`require.main` 门禁、HTTP→Redis→SQLite 关闭顺序和失败后继续清理已有新鲜证据；运行期 Redis 断开时的有限重连、离线队列关闭、限流错误包装与 503 fail-closed 生产链路已完成概念确认；已有真实 Redis、临时 SQLite、临时 HTTP 端口的注册/登录/`/me` 联调测试已通过；ChatServer 的 `AuthIntrospectionConfig` 数据模型、配置错误枚举、`parseAuthIntrospectionConfig()` 主流程、`authIntrospectionConfigErrorCode()`、`loadAuthIntrospectionConfigFromEnvironment()` 和 `net::Server` 配置注入已写入源文件并通过构建；
 - **错误码记录**：W12-2 所有稳定模块错误码、HTTP 业务码、底层诊断码、Express `error.type` 与内部 reason/message 的区别，已整理进唯一学习笔记的“W12-2 错误码总表”；
-- **当前未产生的证据**：R12-2-13 运行期断开的自动化/集成测试尚未补充（按新顺序标记为未来待实现）；配置解析器尚未完成学习掌握确认；W12-3 HTTP 客户端和启动注入尚未实现。使用错误的旧构建目录 `D:\CppLearn\chathub\build` 曾得到 MariaDB package 缺失提示，但实际通过 vcpkg 配置的 `D:\CppLearn\chathub\cmake-build-debug-mysql` 已成功构建 `chat-server`。
-- **下一待办项**：完成配置解析器的阶段边界复盘，再进入 `server_runtime_config` 的环境变量读取和 fail-closed 启动注入；测试继续延后，不在实现阶段新增测试文件。
+- **当前未产生的证据**：R12-2-13 运行期断开的自动化/集成测试尚未补充（按新顺序标记为未来待实现）；W12-3 HTTP 客户端、一次认证请求的异步生命周期和 Session 结果映射尚未实现。使用错误的旧构建目录 `D:\CppLearn\chathub\build` 曾得到 MariaDB package 缺失提示，但实际通过 vcpkg 配置的 `D:\CppLearn\chathub\cmake-build-debug-mysql` 已成功构建 `chat-server`。
+- **下一待办项**：实现 `IAuthIntrospectionClient` 的 HTTP 请求/响应解析、超时和三态结果回调；测试继续延后，不在实现阶段新增测试文件。

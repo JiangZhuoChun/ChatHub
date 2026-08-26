@@ -2,6 +2,7 @@
 
 #include "net/session.h"
 #include "repository/message_repository_contract.h"
+#include "auth/auth_introspection_client.h"
 
 #include <chrono>
 #include <memory>
@@ -18,9 +19,12 @@ class Server
   public:
     // ==================== 模块：生命周期与监听 ====================
     // 功能：创建 Server strand、绑定监听端口，并准备下一次接受连接的 Socket。
-    Server(asio::io_context &io_context, std::uint16_t port, std::string database_path,
-           std::chrono::milliseconds authentication_timeout,
-           std::unique_ptr<repository::IMessageRepository> message_repository);
+    Server(asio::io_context &io_context,
+            std::uint16_t port,
+            std::string database_path,
+            std::chrono::milliseconds authentication_timeout,
+            auth::AuthIntrospectionConfig auth_introspection_config,
+            std::unique_ptr<repository::IMessageRepository> message_repository);
 
     // 功能：输出监听信息并开始持续异步接受新的 TCP 连接。
     void start();
@@ -121,6 +125,8 @@ class Server
 
     // 功能：保存尚未被接收者确认的消息，生命周期仅限当前服务进程。
     PendingDeliveryMap m_pendingDeliveries;
+
+    auth::AuthIntrospectionConfig m_auth_introspection_config;
 
     std::unique_ptr<repository::IMessageRepository> m_message_repository;
 

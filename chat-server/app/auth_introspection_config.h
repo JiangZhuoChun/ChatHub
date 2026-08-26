@@ -21,6 +21,8 @@ struct AuthIntrospectionConfigResult
     AuthIntrospectionConfigError error {AuthIntrospectionConfigError::none};
 };
 
+AuthIntrospectionConfigResult loadAuthIntrospectionConfigFromEnvironment();
+
 AuthIntrospectionConfigResult parseAuthIntrospectionConfig(std::string_view url_text,
                                                            std::string_view internal_service_key,
                                                            std::string_view timeout_text);

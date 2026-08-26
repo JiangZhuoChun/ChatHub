@@ -1,3 +1,5 @@
+#include "auth/auth_introspection_client.h"
+#include "auth_introspection_config.h"
 #include "message_repository_factory.h"
 #include "server_runtime_config.h"
 
@@ -83,24 +85,37 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
     const auto &config = *result.config;
+
+    auto auth_config_result = app::loadAuthIntrospectionConfigFromEnvironment();
+    if (!auth_config_result.config)
+    {
+        std::cerr << "configuration_error: "
+                  << app::authIntrospectionConfigErrorCode(auth_config_result.error)
+                  << std::endl;
+        return EXIT_FAILURE;
+    }
+    auto auth_introspection_config = std::move(*auth_config_result.config);
+
     auto factory_result = app::createMessageRepository(config);
     if (!factory_result.repository)
     {
         const char* const prefix = isConfigurationError(factory_result.error)
         ? "configuration_error: "
         : "repository_startup_error: ";
-
         std::cerr << prefix << app::messageRepositoryStartupErrorCode(factory_result.error)
                   << std::endl;
-
         return EXIT_FAILURE;
     }
+
 
     try
     {
         asio::io_context io_context;
-        net::Server server(io_context, config.port, config.database_path.string(), config.authentication_timeout,
-                           std::move(factory_result.repository));
+        net::Server server(io_context, config.port,
+                            config.database_path.string(),
+                             config.authentication_timeout,
+                             std::move(auth_introspection_config),
+                             std::move(factory_result.repository));
         server.start();
 
         // 必须在 server 之后创建：析构时线程先停止并回收，随后才销毁 server

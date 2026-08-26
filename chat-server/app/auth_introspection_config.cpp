@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 #include <cstdint>
+#include <cstdlib>
 namespace
 {
 constexpr std::string_view HTTP_PREFIX = "http://";
@@ -15,6 +16,10 @@ constexpr std::uint64_t DEFAULT_TIMEOUT_MS = 2000;
 constexpr std::uint64_t MIN_TIMEOUT_MS = 100;
 constexpr std::uint64_t MAX_TIMEOUT_MS = 5000;
 constexpr std::size_t MAX_URL_LENGTH = 512;
+
+constexpr auto AUTH_INTROSPECTION_URL_ENV = "CHATHUB_AUTH_INTROSPECTION_URL";
+constexpr auto AUTH_INTERNAL_SERVICE_KEY_ENV = "CHATHUB_AUTH_INTERNAL_SERVICE_KEY";
+constexpr auto AUTH_INTROSPECTION_TIMEOUT_MS_ENV = "CHATHUB_AUTH_INTROSPECTION_TIMEOUT_MS";
 
 bool isBlank(const std::string_view text)
 {
@@ -33,6 +38,15 @@ bool hasWhitespaceOrControl(const std::string_view text)
         return std::isspace(value) != 0 || std::iscntrl(value) != 0;
     });
 }
+std::string_view readEnvironmentValue(const char *variable_name)
+{
+    const auto raw_value = std::getenv(variable_name);
+    if (raw_value == nullptr)
+    {
+        return {};
+    }
+    return std::string_view{raw_value};
+}
 
 app::AuthIntrospectionConfigResult makeError(const app::AuthIntrospectionConfigError error)
 {
@@ -42,6 +56,14 @@ app::AuthIntrospectionConfigResult makeError(const app::AuthIntrospectionConfigE
 
 namespace app
 {
+AuthIntrospectionConfigResult loadAuthIntrospectionConfigFromEnvironment()
+{
+    return parseAuthIntrospectionConfig(
+        readEnvironmentValue(AUTH_INTROSPECTION_URL_ENV),
+        readEnvironmentValue(AUTH_INTERNAL_SERVICE_KEY_ENV),
+        readEnvironmentValue(AUTH_INTROSPECTION_TIMEOUT_MS_ENV));
+}
+
 AuthIntrospectionConfigResult parseAuthIntrospectionConfig(const std::string_view url_text,
                                                            const std::string_view internal_service_key,
                                                            const std::string_view timeout_text)

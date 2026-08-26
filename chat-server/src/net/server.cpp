@@ -6,12 +6,12 @@
 #include <openssl/rand.h>
 
 #include <algorithm>
+#include <array>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <utility>
 #include <vector>
-#include <array>
-#include <optional>
 namespace
 {
 
@@ -116,7 +116,7 @@ std::string makeAuthenticationTimeoutErrorBody()
 std::optional<std::string> generateMessageId()
 {
     constexpr char kHexDigits[] = "0123456789ABCDEF";
-    std::array<unsigned char,16> random_bytes{};
+    std::array<unsigned char, 16> random_bytes{};
 
     if (RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size())) != 1)
     {
@@ -134,7 +134,7 @@ std::optional<std::string> generateMessageId()
 
     return message_id;
 }
-}// namespace
+} // namespace
 
 namespace net
 {
@@ -143,10 +143,12 @@ namespace net
 // 功能：创建 Server 串行执行器，绑定 IPv4 监听端口，并准备异步接受使用的 Socket。
 Server::Server(asio::io_context &io_context, const std::uint16_t port, std::string database_path,
                const std::chrono::milliseconds authentication_timeout,
+               auth::AuthIntrospectionConfig auth_introspection_config,
                std::unique_ptr<repository::IMessageRepository> message_repository)
     : m_strand(asio::make_strand(io_context)),
       m_acceptor(io_context, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port)), m_pending_socket(io_context),
       m_database_path(std::move(database_path)), m_authentication_timeout(authentication_timeout),
+      m_auth_introspection_config(std::move(auth_introspection_config)),
       m_message_repository(std::move(message_repository)), m_database_available(m_message_repository != nullptr)
 {
     if (!m_database_available)
@@ -377,12 +379,11 @@ void Server::sendToUser(const SessionId sender_id, const protocol::Message &mess
     {
         std::cerr << "message_id_generation_failed\n";
         sender_it->second->send(protocol::MessageType::error,
-            makeRouteErrorBody(payload.local_id, "database_write_failed", "数据库错误"));
+                                makeRouteErrorBody(payload.local_id, "database_write_failed", "数据库错误"));
         return;
     }
 
-    repository::NewMessage msg{sender, recipient, content,
-                            send_at, local_id, now_ms, *candidate_message_id};
+    repository::NewMessage msg{sender, recipient, content, send_at, local_id, now_ms, *candidate_message_id};
     auto outcome = m_message_repository->storeMessage(msg);
     switch (outcome.result)
     {
