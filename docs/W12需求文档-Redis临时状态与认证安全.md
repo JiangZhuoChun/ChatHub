@@ -2,8 +2,8 @@
 
 > 文档状态：待用户确认
 > 实施状态：W12-1 已通过；W12-2 的 Redis client 边界、`login_rate_limiter.js`、`app.js` 登录调用链和 `server.js` 启动编排均已实现、验证并完成掌握确认；临时 SQLite + 真实 Redis + HTTP 最小联调已实现、通过新鲜验证并完成掌握确认。W12-1 已完成 WSL Redis CLI 的连通与 TTL 首轮人工实验、Windows Node.js `PING`、String/TTL、100 并发原子计数、`MULTI/EXEC + EXPIRE ... NX` 固定窗口变式、Redis key 类型错误、非整数 String 的 `INCR` 值格式错误与受控连接失败
-> 当前状态：**W12-2 Redis 并发失败计数精确性（R12-2-11）已实现、验证并完成掌握确认，等待用户说“下一步”**
-> 当前授权：`app.js` 的依赖校验、`/register`、`/me` 和真实 Redis 合同测试已按用户授权代写并完成掌握确认；本轮在既有真实 Redis 合同测试基础上补充 R12-2-11 并发失败计数测试，仍不提交 Git。
+> 当前唯一能力点：**W12-2 Redis 启动依赖失败（R12-2-12，代码已实现并通过新鲜验证，掌握确认待完成）**
+> 当前授权：`app.js` 的依赖校验、`/register`、`/me` 和真实 Redis 合同测试已按用户授权代写并完成掌握确认；本轮在既有 Redis/HTTP 回归基础上补充 R12-2-12 启动依赖失败测试，仍不提交 Git。
 > 教学约束：用户尚未系统学习 Redis。每个实现能力点必须先讲概念和 API，再由用户优先编写；只有用户明确要求“帮我实现/修改/修复”时才代写生产代码。直接代写后必须继续追问调用顺序、失败路径和关键参数，用户回答通过后才能记录为“已掌握”，代码完成不等于学习完成。
 
 ---
@@ -63,7 +63,7 @@ W12 解决两个问题：
 | 阶段 | 唯一能力点 | 交付物 | 当前状态 |
 |---|---|---|---|
 | W12-1 | Redis 最小实验 | 独立 Node.js spike、可重复测试、实验说明 | 已通过：正常、到期、并发、固定窗口、错误与连接失败证据齐全 |
-| W12-2 | 失败登录限流 | Auth Service Redis 客户端边界、限流模块、HTTP 行为与测试 | 进行中：Redis client、限流模块、`app.js`、`server.js` 和真实 HTTP/Redis 基础/阈值/用户隔离/IP/TTL/未知账号/非法输入/并发测试已验证并完成对应掌握 |
+| W12-2 | 失败登录限流 | Auth Service Redis 客户端边界、限流模块、HTTP 行为与测试 | 进行中：Redis client、限流模块、`app.js`、`server.js` 和真实 HTTP/Redis 基础/阈值/用户隔离/IP/TTL/未知账号/非法输入/并发测试已验证并完成对应掌握；R12-2-12 启动失败待完成掌握确认 |
 | W12-3 | `jti` 与撤销设计 | 跨 Auth Service / ChatServer 的书面方案、合同、失败语义 | 未开始 |
 | W12-4 | 验收与交付 | 新鲜验证、README/需求/交接同步、范围审查 | 未开始 |
 
@@ -427,6 +427,7 @@ Qt Client 当前会显示响应中的 `error`，所以 429/503 不要求修改�
 | `auth-service/src/db.js` | 保持 SQLite 用户事实；为测试提供显式路径/工厂 | `createDatabase(path)` |
 | `auth-service/test/login_rate_limiter.test.js` | 真实 Redis 的模块合同 | `node:test` cases |
 | `auth-service/test/login_rate_limit_http.test.js` | 临时 SQLite + 真实 Redis + 临时 HTTP 端口 | 端到端 HTTP cases |
+| `auth-service/test/server_startup_failure.test.js` | 未监听 Redis 目标下的真实 server.js 启动门禁 | 子进程启动失败与 3000 端口探测 |
 | `auth-service/package.json` / lock | 锁定 `redis` 依赖并增加测试脚本 | `npm test` |
 
 `login_rate_limiter.js` 不得依赖 Express 的 `req` / `res`，只接收已验证的业务输入；Express 路由只负责调用顺序和 HTTP 映射。
@@ -738,6 +739,8 @@ component=auth phase=login event=rate_limited dimension=user
 - [x] 用户能独立解释输入校验、依赖调用顺序和三类“未发生”证据；
 - [x] 代写并验证 R12-2-11：20 个并发 `recordFailure()` 计数精确为 1～20，两个维度各只首次设置 TTL，延迟失败不重置窗口，最终两个 key 均过期；
 - [x] 用户能独立解释 Redis 原子计数、`EXPIRE ... NX` 和有界过期轮询的证据关系；
+- [x] 代写并验证 R12-2-12：真实 `server.js` 连接未监听 Redis 端口时非零退出，且 HTTP 3000 端口前后均未监听；
+- [ ] 用户能独立解释启动门禁、子进程证据、端口探测和有界失败；
 
 ### W12-3：JWT 撤销设计
 
@@ -844,8 +847,8 @@ Git 规则：
 - `clearUserFailures()` 新鲜复验：先记录同一 username/IP 两次失败，首次清理返回 `{deleted: 1}`；随后 username 为 `count: 0`、`ttl_seconds: -2`，IP 仍为 `count: 2`、TTL `60`；重复清理返回 `{deleted: 0}`；Redis 失败映射为 `redis_unavailable`，非法删除回复映射为 `redis_data_invariant`，非法 username 映射为 `login_limiter_input_invalid`；语法和探针退出码均为 `0`。
 - `app.js` 新鲜复验：`node --check src/app.js` 退出码为 `0`；使用假的 db/limiter/bcrypt/JWT 依赖启动临时 HTTP 端口，`APP_LOGIN_MATRIX_PASS` 通过。非法输入不调用任何依赖；已限流直接返回 429 和 `Retry-After`；错误凭据按 `inspect → db → bcrypt → recordFailure` 返回 401/429；成功按 `inspect → db → bcrypt → clearUserFailures → jwt.sign` 返回 200；`inspect`、`recordFailure`、`clearUserFailures` 的 Redis 错误均返回 503，清理失败不签发 token。malformed JSON 另行验证返回 400；使用项目实际 `bcryptjs` 与 `jsonwebtoken` 的成功路径验证输出 `REAL_BCRYPT_JWT_APP_PASS`；携带伪造 `X-Forwarded-For` 仍输出 `TRUSTED_SOCKET_IP_PASS`，限流输入使用底层 socket 地址。随后仅按模块/公共入口补充中文注释，`node --check`、空白检查和最小回归仍通过。该探针不代表真实 HTTP 集成已完成。
 
-- **当前能力点**：W12-2 Redis 并发失败计数精确性（R12-2-11）已实现、通过新鲜验证并完成掌握确认，等待用户说“下一步”；
+- **当前能力点**：W12-2 Redis 启动依赖失败（R12-2-12）已实现并通过新鲜验证，掌握确认待完成；
 - **已完成项**：W12-1 的 R12-1-01～12 均有对应证据；W12-2 已确认 username/IP 双维度、key 所有者、400/401/429/503、fail-closed 和调用顺序；Redis client 生命周期已通过；`login_rate_limiter.js` 的 key、`inspect()`、`recordFailure()`、`clearUserFailures()`、错误码、输入边界、TTL 和并发证据均已通过；`app.js` 的依赖合同、登录顺序、错误映射和 malformed JSON 边界已有新鲜 HTTP 探针证据；`server.js` 的配置边界、Redis 启动门禁、监听 Promise、`require.main` 门禁、HTTP→Redis→SQLite 关闭顺序和失败后继续清理已有新鲜证据；新增真实 Redis、临时 SQLite、临时 HTTP 端口的注册/登录/`/me` 联调测试已通过；
 - **错误码记录**：W12-2 所有稳定模块错误码、HTTP 业务码、底层诊断码、Express `error.type` 与内部 reason/message 的区别，已整理进唯一学习笔记的“W12-2 错误码总表”；
 - **当前未产生的证据**：Redis 故障映射与 JWT 撤销尚未完成；本步不扩大解释为这些能力已掌握。
-- **下一待办项**：等待用户说“下一步”，再定义后续最小能力点；不提前进入 Redis 故障、JWT 撤销或 Docker。
+- **下一待办项**：完成 R12-2-12 复盘问答；通过前不进入运行期断开、JWT 撤销或 Docker。
