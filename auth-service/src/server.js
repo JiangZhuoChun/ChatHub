@@ -13,6 +13,7 @@ const {createRedisClient, connectRedis, closeRedis} = require('./redis_client');
 const {createLoginRateLimiter} = require('./login_rate_limiter');
 const {createApp} = require('./app');
 const {createDatabase} = require('./db');
+const {createJwtRevocationStore} = require('./jwt_revocation_store');
 
 // ==================== 模块：进程级配置 ====================
 // 这些连接参数是基础设施保护参数，不开放为业务配置，避免启动行为被随意改变。
@@ -68,6 +69,13 @@ function parseConfig(environment = process.env) {
         throw startupConfigError('SECRET_KEY_missing');
     }
 
+    const internal_service_key = typeof environment.CHATHUB_AUTH_INTERNAL_SERVICE_KEY === 'string'
+            ? environment.CHATHUB_AUTH_INTERNAL_SERVICE_KEY.trim()
+            : '';
+    if (internal_service_key.length === 0) {
+        throw startupConfigError('CHATHUB_AUTH_INTERNAL_SERVICE_KEY_missing');
+    }
+
     const keyPrefix = environment.CHATHUB_REDIS_KEY_PREFIX === undefined
         ? DEFAULT_KEY_PREFIX
         : String(environment.CHATHUB_REDIS_KEY_PREFIX).trim();
@@ -98,6 +106,7 @@ function parseConfig(environment = process.env) {
     return {
         redisUrl,
         secretKey,
+        internal_service_key,
         keyPrefix,
         userLimit,
         ipLimit,
@@ -151,7 +160,6 @@ function listenApp(app, port) {
         httpServer.once('error', onStartupError);
     });
 }
-
 // HTTP server 没有监听时不调用 close，保证启动失败清理和重复关闭都是安全的。
 async function closeHttpServer(httpServer) {
     if (!httpServer || !httpServer.listening) {
@@ -240,12 +248,19 @@ async function main(environment = process.env) {
             windowSeconds: config.windowSeconds
         });
 
+        const revocation_store = createJwtRevocationStore({
+            client: redisClient,
+            key_prefix: config.keyPrefix
+        })
+
         const app = createApp({
             db,
             limiter,
             bcrypt,
             jwt,
-            secretKey: config.secretKey
+            secretKey: config.secretKey,
+            internal_service_key: config.internal_service_key,
+            revocation_store
         });
 
         // 2. 所有依赖准备完成后，最后才允许 HTTP 对外监听。

@@ -55,6 +55,7 @@ add_executable(chat-server
         src/repository/mysql_message_repository.cpp
         app/server_runtime_config.cpp
         app/message_repository_factory.cpp
+        app/auth_introspection_config.cpp
 )
 configure_chat_server_target(chat-server)
 target_include_directories(chat-server PRIVATE

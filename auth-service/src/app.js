@@ -5,20 +5,27 @@
 // Redis client、SQLite 连接、bcrypt 与 JWT 实例都从 createApp() 参数注入，
 // 因此测试可以替换它们；本文件不负责连接依赖，也不负责 app.listen()。
 const express = require('express');
+const {randomUUID,timingSafeEqual} = require('node:crypto');
 
 // ==================== 模块：输入、错误和响应常量 ====================
 // username 的格式必须与 login_rate_limiter.js 的 key 输入合同保持一致。
 const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,20}$/;
+const INTERNAL_SERVICE_KEY_HEADER = 'X-Internal-Service-Key';
 
 // 只有这两类限流依赖错误可以安全映射为 503；其他异常不能伪装成 Redis 故障。
 const LIMITER_DEPENDENCY_ERROR_CODES = new Set([
     'redis_unavailable',
     'redis_data_invariant'
 ]);
+const REVOCATION_DEPENDENCY_ERROR_CODES = new Set([
+    'jwt_revocation_unavailable',
+    'jwt_revocation_data_invariant'
+]);
 
 const GENERIC_CREDENTIAL_ERROR = '用户名或密码错误';
 const RATE_LIMITED_ERROR = '登录尝试过于频繁，请稍后再试';
 const DEPENDENCY_UNAVAILABLE_ERROR = '认证服务暂时不可用';
+
 
 // ==================== 公共辅助：配置错误 ====================
 // 统一创建带稳定 code 的配置错误，供 createApp() 在启动组装阶段抛出。
@@ -34,7 +41,7 @@ function validateDependencies(dependencies = {}) {
         throw appConfigError('dependencies_invalid');
     }
 
-    const {db, limiter, bcrypt, jwt, secretKey} = dependencies;
+    const {db, limiter, bcrypt, jwt, secretKey,revocation_store,internal_service_key} = dependencies;
     if (!db || typeof db.prepare !== 'function') {
         throw appConfigError('db_dependency_invalid');
     }
@@ -56,6 +63,13 @@ function validateDependencies(dependencies = {}) {
     }
     if (typeof secretKey !== 'string' || secretKey.length === 0) {
         throw appConfigError('jwt_secret_invalid');
+    }
+    if(!revocation_store || typeof revocation_store.isRevoked !== 'function' ||
+    typeof revocation_store.revoke !== 'function'){
+        throw appConfigError('revocation_store_dependency_invalid');
+    }
+    if(typeof internal_service_key !== 'string' || internal_service_key.length === 0){
+        throw appConfigError('internal_service_key_invalid');
     }
 }
 
@@ -86,6 +100,11 @@ function validateLoginInput(username, password) {
 function isLimiterDependencyError(error) {
     return Boolean(
         error && LIMITER_DEPENDENCY_ERROR_CODES.has(error.code)
+    );
+}
+function isRevocationDependencyError(error) {
+    return Boolean(
+        error && REVOCATION_DEPENDENCY_ERROR_CODES.has(error.code)
     );
 }
 
@@ -120,7 +139,42 @@ function handleLimiterError(error, res, next) {
     }
     return next(error);
 }
+function handleRevocationError(error, res, next) {
+    if (isRevocationDependencyError(error)) {
+        return sendDependencyUnavailable(res);
+    }
+    return next(error);
+}
 
+function extractBearerToken(req){
+    const auth_header = req.headers.authorization;
+    if(typeof auth_header !== 'string' || !auth_header.startsWith('Bearer ')){
+        return null;
+    }
+
+    const token = auth_header.slice('Bearer '.length).trim();
+    return token.length > 0 ? token : null;
+}
+function safeTextEqual(actual_text,expected_text){
+    if(typeof actual_text !== 'string' || typeof expected_text !== 'string'){
+        return false;
+    }
+    const actual_buffer = Buffer.from(actual_text,'utf8');
+    const expected_buffer = Buffer.from(expected_text,'utf8');
+
+    // timingSafeEqual 要求两个 Buffer 长度相同。
+    if(actual_buffer.length !== expected_buffer.length){
+        return false;
+    }
+    return timingSafeEqual(actual_buffer,expected_buffer);
+}
+function isInternalServiceAuthorized(req, internal_service_key) {
+    if(!req || typeof req.get !== 'function'){
+        return false;
+    }
+    const provided_key = req.get(INTERNAL_SERVICE_KEY_HEADER);
+    return safeTextEqual(provided_key, internal_service_key);
+}
 // ==================== 公共入口：createApp ====================
 /**
  * 创建不监听端口的 Express 应用。
@@ -131,12 +185,16 @@ function handleLimiterError(error, res, next) {
  * @param {object} dependencies.bcrypt 提供 compare(password, hash)
  * @param {object} dependencies.jwt 提供 sign(payload, secret, options)
  * @param {string} dependencies.secretKey JWT 签名密钥
+ * @param {object} dependencies.revocation_store 提供 isRevoked(token) 和 revoke(token)
+ * @param {string} dependencies.internal_service_key 内部服务密钥
  * @returns {object} 可交给 server.js 或测试监听的 Express app
  */
 function createApp(dependencies = {}) {
     validateDependencies(dependencies);
 
-    const {db, limiter, bcrypt, jwt, secretKey} = dependencies;
+    const {db, limiter, bcrypt,
+        jwt, secretKey, revocation_store, internal_service_key} = dependencies;
+
     const app = express();
 
     // 让 JSON 请求正文进入 req.body；malformed JSON 由底部错误处理中映射为 400。
@@ -247,10 +305,14 @@ function createApp(dependencies = {}) {
 
         // 最后才签发一小时 JWT；token 不进入 Redis，也不写入日志。
         try {
+            const jti = randomUUID();
             const token = jwt.sign(
                 {username},
                 secretKey,
-                {expiresIn: '1h'}
+                {
+                    expiresIn: '1h',
+                    jwtid: jti
+                }
             );
             return res.status(200).json({
                 message: '登录成功',
@@ -262,21 +324,107 @@ function createApp(dependencies = {}) {
         }
     });
 
+    app.post('/internal/auth/introspect',async (req,res,next) =>{
+        // 第一关：确认调用方是 ChatServer。
+        if(!isInternalServiceAuthorized(req,internal_service_key)){
+            return res.status(401).json({
+                error: '内部服务认证失败',
+                code: 'internal_service_rejected'
+            })
+        }
+        // 第二关：确认内部接口请求格式正确。
+        const request_body = req.body ?? {};
+        if(!request_body
+            || typeof request_body !== 'object'
+            || Array.isArray(request_body)
+            ||typeof request_body.token !== 'string'
+            || request_body.token.trim().length === 0){
+            return res.status(400).json({
+                error: '无效的 introspection 请求',
+                code: 'invalid_introspection_request'
+            });
+        }
+        let decoded_token;
+        try {
+            // 这里不能使用 ignoreExpiration。
+            decoded_token = jwt.verify(request_body.token.trim(), secretKey);
+        }catch (error){
+            return res.status(401).json({
+                error: '无效的授权信息',
+                code: 'authentication_rejected'
+            });
+        }
+        // JWT 签名正确，还要检查业务 claims。
+        if(!decoded_token
+            || typeof decoded_token !== 'object'
+            || typeof decoded_token.username !== 'string'
+            || decoded_token.username.length === 0
+            || typeof decoded_token.jti !== 'string'
+            || decoded_token.jti.length === 0
+            || !Number.isSafeInteger(decoded_token.exp)) {
+            return res.status(401).json({
+                error: '无效的授权信息',
+                code: 'authentication_rejected'
+            });
+        }
+
+        let is_revoked;
+        try {
+            is_revoked = await revocation_store.isRevoked(decoded_token.jti);
+        }catch (error){
+            return handleRevocationError(error,res,next);
+        }
+
+        if(is_revoked){
+            return res.status(401).json({
+            error: '无效的授权信息',
+            code: 'authentication_rejected'
+        })}
+        return res.status(200).json({
+            active: true,
+            username: decoded_token.username
+        })
+    })
+
     // ==================== HTTP 路由：GET /me ====================
-    // /me 只验证客户端携带的 JWT，不查询数据库，也不参与登录限流。
-    app.get('/me', (req, res) => {
-        const authHeader = req.headers.authorization;
-        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    // /me 先验证 JWT，再查询撤销状态；不查询数据库，也不参与登录限流。
+    app.get('/me', async (req, res, next) => {
+        const token = extractBearerToken(req);
+        if (!token) {
             return res.status(401).json({
                 error: '未提供有效的授权信息'
             });
         }
 
-        const token = authHeader.split(' ')[1];
         try {
-            const decoded = jwt.verify(token, secretKey);
+            const decoded_token = jwt.verify(token, secretKey);
+            //JWT 验证成功后，不要马上返回 200。先检查 claims
+            if (!decoded_token ||
+                typeof decoded_token !== 'object' ||
+                typeof decoded_token.username !== 'string' ||
+                typeof decoded_token.jti !== 'string' ||
+                !Number.isSafeInteger(decoded_token.exp)) {
+                return res.status(401).json({
+                    error: '无效的授权信息',
+                    code: 'authentication_rejected'
+                });
+            }
+            //然后查询 Redis
+            let is_revoked;
+            try {
+                is_revoked = await revocation_store.isRevoked(decoded_token.jti);
+            }catch (error){
+                return handleRevocationError(error,res,next);
+            }
+            if(is_revoked){
+                return res.status(401).json({
+                    error: '无效的授权信息',
+                    code: 'authentication_rejected'
+                })
+            }
+            //最后才返回成功
             return res.status(200).json({
-                username: decoded.username
+                username: decoded_token.username
             });
         } catch (error) {
             if (error && error.name === 'TokenExpiredError') {
@@ -290,9 +438,61 @@ function createApp(dependencies = {}) {
         }
     });
 
+    app.post('/logout',async (req,res,next) =>{
+        const token = extractBearerToken(req);
+        if (!token) {
+            return res.status(401).json({
+                error: '未提供有效的授权信息'
+            });
+        }
+
+        let decoded_token;
+        try {
+            decoded_token = jwt.verify(
+                token,
+                secretKey,
+                {
+                    ignoreExpiration: true  //关闭 JWT 的“过期检查
+                });
+        }catch (error){
+            return res.status(401).json({
+                error: '无效的授权信息',
+                code: 'authentication_rejected'
+            });
+        }
+
+        if (
+            !decoded_token ||
+            typeof decoded_token !== 'object' ||
+            typeof decoded_token.jti !== 'string' ||
+            !Number.isSafeInteger(decoded_token.exp)
+        ) {
+            return res.status(401).json({
+                error: '无效的授权信息',
+                code: 'authentication_rejected'
+            });
+        }
+
+        const now_seconds = Math.floor(Date.now()/1000);
+        try {
+            await revocation_store.revoke({
+                jti: decoded_token.jti,
+                exp: decoded_token.exp,
+                now_seconds
+            })
+        }catch (error){
+            return handleRevocationError(error,res,next);
+        }
+
+        return res.status(200).json({
+            message: '退出登录成功'
+        });
+    })
+
     // ==================== 公共错误处理中间件 ====================
     // Express 5 会把 async 路由的 reject 交给这里；不向客户端泄露内部错误细节。
-    app.use((error, _req, res, next) => {
+    /** @type {import('express').ErrorRequestHandler} */
+    const error_handler = (error, _req, res, next) => {
         if (res.headersSent) {
             return next(error);
         }
@@ -301,8 +501,11 @@ function createApp(dependencies = {}) {
                 error: '请求正文必须是有效 JSON'
             });
         }
-        return res.status(500).json({error: '服务器内部错误'});
-    });
+        return res.status(500).json({
+            error: '服务器内部错误'
+        });
+    };
+    app.use(error_handler);
 
     // 工厂只返回 app；端口监听和依赖生命周期由 server.js 统一管理。
     return app;
