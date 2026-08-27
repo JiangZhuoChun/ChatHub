@@ -59,7 +59,7 @@ std::optional<std::string> parseResponseCode(std::string_view response_body) {
   boost::system::error_code parse_error;
   const auto json_value = boost::json::parse(response_body, parse_error);
 
-  if (parse_error && !json_value.is_object()) {
+  if (parse_error || !json_value.is_object()) {
     return std::nullopt;
   }
 
