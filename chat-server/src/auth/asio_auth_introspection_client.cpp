@@ -403,7 +403,7 @@ void RequestOperation::finish(IntrospectionResult result) {
   std::error_code ignore_ec;
   timer.cancel(ignore_ec);
   resolver.cancel();
-  socket.cancel(ignore_ec);
+  socket.close(ignore_ec);
 
   if (cancelled) {
     handler = {};
