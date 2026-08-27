@@ -450,7 +450,7 @@ void Server::handleDeliveryReceipt(const SessionId receipt_sender_id, const prot
         return;
     }
 
-    protocol::DeliveryReceiptPayloadResult payload_result = protocol::parseDeliveryReceiptPayload(message.body);
+    const protocol::DeliveryReceiptPayloadResult payload_result = protocol::parseDeliveryReceiptPayload(message.body);
 
     if (payload_result.error != protocol::DeliveryReceiptPayloadError::none)
     {

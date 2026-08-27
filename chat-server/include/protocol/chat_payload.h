@@ -5,10 +5,12 @@
 #include <string>
 #include <string_view>
 
-namespace protocol {
+namespace protocol
+{
 
 // ==================== 聊天 JSON 正文校验 ====================
-enum class ChatPayloadError {
+enum class ChatPayloadError
+{
     none,
     invalid_json,
 
@@ -35,7 +37,8 @@ enum class ChatPayloadError {
 };
 
 // 成功结果只保存已通过校验、可供服务端路由使用的字段。
-struct ChatPayloadResult {
+struct ChatPayloadResult
+{
     ChatPayloadError error{ChatPayloadError::none};
     std::string to;
     std::string content;
@@ -46,7 +49,8 @@ struct ChatPayloadResult {
 ChatPayloadResult parseChatPayload(std::string_view body);
 
 // ==================== 送达回执 JSON 正文校验 ====================
-enum class DeliveryReceiptPayloadError {
+enum class DeliveryReceiptPayloadError
+{
     none,
     invalid_json,
     missing_message_id,
@@ -55,7 +59,8 @@ enum class DeliveryReceiptPayloadError {
     message_id_too_long,
 };
 
-struct DeliveryReceiptPayloadResult {
+struct DeliveryReceiptPayloadResult
+{
     DeliveryReceiptPayloadError error{DeliveryReceiptPayloadError::none};
     std::string message_id;
 };
@@ -63,7 +68,8 @@ struct DeliveryReceiptPayloadResult {
 DeliveryReceiptPayloadResult parseDeliveryReceiptPayload(std::string_view body);
 
 // ==================== 历史查询 JSON 正文校验 ====================
-enum class HistoryQueryPayloadError {
+enum class HistoryQueryPayloadError
+{
     none,
     invalid_json,
     forbidden_identity_field,
@@ -87,12 +93,14 @@ enum class HistoryQueryPayloadError {
 };
 
 // 已校验的协议层游标；后续由 Server 映射为 Repository 游标。
-struct HistoryQueryCursor {
+struct HistoryQueryCursor
+{
     std::int64_t server_received_at_ms;
     std::string message_id;
 };
 
-struct HistoryQueryPayloadResult {
+struct HistoryQueryPayloadResult
+{
     HistoryQueryPayloadError error{HistoryQueryPayloadError::none};
     std::string request_id;
     int limit{0};

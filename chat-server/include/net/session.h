@@ -148,6 +148,8 @@ class Session : public std::enable_shared_from_this<Session>
     const std::chrono::milliseconds m_authentication_timeout;
 
     std::shared_ptr<auth::IAuthIntrospectionClient> m_auth_introspection_client;
+    //当前 Session 正在等待的那一次 introspection
+    std::shared_ptr<auth::IAuthIntrospectionRequest> m_auth_introspection_request;
 
     // 功能：缓存半包和粘包并还原完整协议帧。
     protocol::FrameDecoder m_decoder;

@@ -9,7 +9,8 @@
 
 ## 1. 目标与范围
 
-程序先以模态 `LoginDialog` 完成注册、HTTP 登录和 TCP/JWT 认证；认证成功后关闭登录对话框，再创建类似 QQ 桌面端的 `MainWindow` 聊天窗口。两个已认证用户可以一对一发送文本消息；消息采用左右气泡显示，并在网络或输入异常时给出明确提示。
+程序先以模态 `LoginDialog` 完成注册、HTTP 登录和 TCP/JWT 认证；认证成功后关闭登录对话框，再创建类似 QQ 桌面端的
+`MainWindow` 聊天窗口。两个已认证用户可以一对一发送文本消息；消息采用左右气泡显示，并在网络或输入异常时给出明确提示。
 
 本切片追求的是 **QQ 的信息层级与交互感**，不是复刻 QQ 的品牌、图标或全部功能。
 
@@ -34,15 +35,15 @@
 
 ## 2. 当前代码基线与必须先对齐的契约
 
-| 位置 | 当前状态 | 本切片要求 |
-|---|---|---|
-| `MainWindow` | 当前承载登录控件 | 改为只承载聊天界面；窗口允许调整大小 |
-| `LoginDialog` | 尚未独立存在 | 承载用户名、密码、登录、注册、HTTP 提示与认证结果 |
-| `main.cpp` | 直接创建并显示 `MainWindow` | 创建应用级 `ChatClient`，先 `exec()` 登录框，成功后再创建聊天窗口 |
-| `ChatClient` | 能认证、能处理 auth/error | 新增发送 chat、解析 chat、发送聊天信号 |
-| `chat_payload` | 只校验 `content` | 同时校验 `to`、`content`，并拒绝 `from`/`sender_id` |
-| `Server::sendToUser` | 直接取 `to`，并只转发 content | 必须使用校验结果；由认证映射补齐 `from`，再转发完整 JSON |
-| `LoginDialog` | 槽函数命名符合自动连接时不得再手动重复连接按钮 | 二选一：保留自动连接时删除手动 `connect(loginBtn/registerBtn)`，避免一次点击发两次请求 |
+| 位置                   | 当前状态                    | 本切片要求                                                       |
+|----------------------|-------------------------|-------------------------------------------------------------|
+| `MainWindow`         | 当前承载登录控件                | 改为只承载聊天界面；窗口允许调整大小                                          |
+| `LoginDialog`        | 尚未独立存在                  | 承载用户名、密码、登录、注册、HTTP 提示与认证结果                                 |
+| `main.cpp`           | 直接创建并显示 `MainWindow`    | 创建应用级 `ChatClient`，先 `exec()` 登录框，成功后再创建聊天窗口                |
+| `ChatClient`         | 能认证、能处理 auth/error      | 新增发送 chat、解析 chat、发送聊天信号                                    |
+| `chat_payload`       | 只校验 `content`           | 同时校验 `to`、`content`，并拒绝 `from`/`sender_id`                  |
+| `Server::sendToUser` | 直接取 `to`，并只转发 content   | 必须使用校验结果；由认证映射补齐 `from`，再转发完整 JSON                          |
+| `LoginDialog`        | 槽函数命名符合自动连接时不得再手动重复连接按钮 | 二选一：保留自动连接时删除手动 `connect(loginBtn/registerBtn)`，避免一次点击发两次请求 |
 
 ### 消息协议：唯一真相
 
@@ -70,11 +71,11 @@
 
 ### 输入与长度约束
 
-| 字段 | 客户端预校验 | 服务端最终校验 |
-|---|---|---|
-| `to` | 去除首尾空格；3-20 个 ASCII 字母、数字或下划线 | 同样校验；确认该用户在 `m_username_to_session` 中 |
-| `content` | 去除首尾空白后不能为空；最多 300 个字符且 UTF-8 不超过 768 字节 | UTF-8 不超过 1024 字节；非空；必须是字符串 |
-| `from` / `sender_id` | 客户端绝不发送 | 若请求中出现，返回业务错误，不转发 |
+| 字段                   | 客户端预校验                                   | 服务端最终校验                               |
+|----------------------|------------------------------------------|---------------------------------------|
+| `to`                 | 去除首尾空格；3-20 个 ASCII 字母、数字或下划线            | 同样校验；确认该用户在 `m_username_to_session` 中 |
+| `content`            | 去除首尾空白后不能为空；最多 300 个字符且 UTF-8 不超过 768 字节 | UTF-8 不超过 1024 字节；非空；必须是字符串           |
+| `from` / `sender_id` | 客户端绝不发送                                  | 若请求中出现，返回业务错误，不转发                     |
 
 `768` 是客户端的体验上限，为 JSON 字段与协议体预留空间；服务端仍以协议上限作为最终安全边界。
 
@@ -136,11 +137,13 @@ main.cpp
 
 ### 3.3 设计取舍
 
-- 消息区选择 `QScrollArea + QVBoxLayout`，而不是仅用 `QListWidget::addItem(text)`：气泡可自适应宽度、可显示时间、可放发送状态，也更接近 QQ。
+- 消息区选择 `QScrollArea + QVBoxLayout`，而不是仅用 `QListWidget::addItem(text)`：气泡可自适应宽度、可显示时间、可放发送状态，也更接近
+  QQ。
 - 会话列表可继续使用 `QListWidget`：本切片只需显示会话名称与最后一条消息预览，`QListWidget` 足够简单。
 - `recipientEdit` 在 W8 暂时保留。点击会话列表后自动填入接收者；在没有联系人服务前，它是创建第一段私聊所必需的入口。
 - 不把接收者昵称写死为“在线”。W8 只有“连接正常/服务端告知用户离线/当前未知”三种状态。
-- `LoginDialog` 不拥有 `ChatClient`。若让它成为登录框子对象，对话框在作用域结束、析构或 `deleteLater()` 时会错误析构仍需存活的 TCP 客户端；若 `ChatClient` 本身是栈对象，还可能造成 QObject 父子析构冲突。
+- `LoginDialog` 不拥有 `ChatClient`。若让它成为登录框子对象，对话框在作用域结束、析构或 `deleteLater()` 时会错误析构仍需存活的
+  TCP 客户端；若 `ChatClient` 本身是栈对象，还可能造成 QObject 父子析构冲突。
 
 ### 3.4 启动与对象生命周期
 
@@ -163,10 +166,14 @@ QApplication 创建
   -> show() + QApplication::exec()
 ```
 
-- `ChatClient` 由 `main.cpp` 以应用级对象持有，不设置 `LoginDialog` 或 `MainWindow` 为父对象；它内部的 `QTcpSocket` 仍可由 `ChatClient` 管理。
-- `LoginDialog` 可以持有只服务于登录阶段的 `HttpClient`。HTTP 成功后，将规范化后的用户名保存至 `m_username`，但**不能**立刻 `accept()`；必须等待 TCP 的 `authSucceeded()`。
-- `LoginDialog::username()` 用于在对话框结束后把身份传给 `MainWindow`。认证成功信号只表示 token 已被 chat-server 接受，不再携带或从已销毁的输入框读取用户名。
-- 登录阶段由 `LoginDialog` 处理 `authFrameSent/authSucceeded/authFailed/connectionFailed`；聊天阶段由 `MainWindow` 处理断线、聊天消息和发送状态。Qt 在接收者对象析构时会自动断开相关连接，因此不会回调到已销毁的登录框。
+- `ChatClient` 由 `main.cpp` 以应用级对象持有，不设置 `LoginDialog` 或 `MainWindow` 为父对象；它内部的 `QTcpSocket` 仍可由
+  `ChatClient` 管理。
+- `LoginDialog` 可以持有只服务于登录阶段的 `HttpClient`。HTTP 成功后，将规范化后的用户名保存至 `m_username`，但**不能**立刻
+  `accept()`；必须等待 TCP 的 `authSucceeded()`。
+- `LoginDialog::username()` 用于在对话框结束后把身份传给 `MainWindow`。认证成功信号只表示 token 已被 chat-server
+  接受，不再携带或从已销毁的输入框读取用户名。
+- 登录阶段由 `LoginDialog` 处理 `authFrameSent/authSucceeded/authFailed/connectionFailed`；聊天阶段由 `MainWindow`
+  处理断线、聊天消息和发送状态。Qt 在接收者对象析构时会自动断开相关连接，因此不会回调到已销毁的登录框。
 
 ---
 
@@ -174,16 +181,16 @@ QApplication 创建
 
 ### 4.1 风格基调
 
-| 元素 | 规范 |
-|---|---|
-| 主背景 | `#F5F6F8`，降低纯白大面积视觉疲劳 |
-| 导航栏 | `#1F2937` 深色，突出 QQ 式窄侧栏层级 |
-| 会话栏 | 白色，选中项 `#E8F1FF` |
-| 主按钮/自己气泡 | `#1677FF`，白色文字 |
-| 对方气泡 | 白色，边框 `#E5E7EB` |
-| 错误提示 | `#D92D20`，不得只依赖颜色表达错误 |
-| 字体 | Windows 优先 `Microsoft YaHei`，正文 10-11 pt |
-| 圆角 | 面板 8 px；气泡 12 px；不要使用过度阴影 |
+| 元素       | 规范                                       |
+|----------|------------------------------------------|
+| 主背景      | `#F5F6F8`，降低纯白大面积视觉疲劳                    |
+| 导航栏      | `#1F2937` 深色，突出 QQ 式窄侧栏层级                |
+| 会话栏      | 白色，选中项 `#E8F1FF`                         |
+| 主按钮/自己气泡 | `#1677FF`，白色文字                           |
+| 对方气泡     | 白色，边框 `#E5E7EB`                          |
+| 错误提示     | `#D92D20`，不得只依赖颜色表达错误                    |
+| 字体       | Windows 优先 `Microsoft YaHei`，正文 10-11 pt |
+| 圆角       | 面板 8 px；气泡 12 px；不要使用过度阴影                |
 
 ### 4.2 建议 QSS（保存为 `client-qt/chat_window.qss`）
 
@@ -261,11 +268,11 @@ QLabel#connectionStateLabel[status="error"] { color: #D92D20; }
 
 气泡不建议只靠 QSS 区分。每条消息使用 `ChatBubbleWidget`，由 `MessageDirection` 决定布局方向与 `objectName`：
 
-| 方向 | 布局 | 气泡 objectName | 视觉 |
-|---|---|---|---|
+| 方向   | 布局  | 气泡 objectName    | 视觉                     |
+|------|-----|------------------|------------------------|
 | 自己发送 | 右对齐 | `outgoingBubble` | 蓝底、白字、右下显示“发送中/已发送/失败” |
-| 对方发送 | 左对齐 | `incomingBubble` | 白底、浅灰边框、显示昵称与时间 |
-| 系统消息 | 居中 | `systemMessage` | 灰色小字，例如“对方当前不在线” |
+| 对方发送 | 左对齐 | `incomingBubble` | 白底、浅灰边框、显示昵称与时间        |
+| 系统消息 | 居中  | `systemMessage`  | 灰色小字，例如“对方当前不在线”       |
 
 ### 4.3 消息气泡最小 API
 
@@ -319,7 +326,8 @@ signals:
     void connectionFailed(const QString &reason);
 ```
 
-若 HTTP 响应无 token、token 为空、TCP 无法连接或收到认证拒绝，`LoginDialog` 只恢复按钮状态并显示原因，**不得**调用 `accept()`，也不得创建聊天窗口。
+若 HTTP 响应无 token、token 为空、TCP 无法连接或收到认证拒绝，`LoginDialog` 只恢复按钮状态并显示原因，**不得**调用
+`accept()`，也不得创建聊天窗口。
 
 ### 5.2 发送消息
 
@@ -376,27 +384,29 @@ signals:
 
 `chatMessageQueued` 仅表示 Qt 已接受写入缓冲，并不等于接收者已收到。V1 没有送达回执，因此气泡最终状态为“已发送到服务器”；不要显示“对方已读”。
 
-`MainWindow` 构造时先连接聊天阶段的信号与槽，再用 `isAuthenticated()` 同步初始化 `connectionStateLabel` 和发送按钮；不要只依赖已经发生过的 `authSucceeded()` 信号来判断初始状态。
+`MainWindow` 构造时先连接聊天阶段的信号与槽，再用 `isAuthenticated()` 同步初始化 `connectionStateLabel` 和发送按钮；不要只依赖已经发生过的
+`authSucceeded()` 信号来判断初始状态。
 
 ---
 
 ## 6. 错误处理与 UI 表现
 
-| 场景 | 处理者 | UI 表现 | 是否保留输入 |
-|---|---|---|---|
-| HTTP 登录失败、响应缺少 token 或超时 | LoginDialog | 登录框内显示原因、恢复登录/注册按钮 | 保留用户名和密码 |
-| 认证阶段 TCP 连接失败或认证被拒绝 | LoginDialog | 登录框内显示原因，不关闭对话框 | 保留用户名和密码 |
-| 用户关闭或取消登录框 | main.cpp | 不创建 MainWindow，程序正常退出 | 不适用 |
-| 接收者为空/格式非法 | MainWindow | 输入框下方红字“请输入有效用户名” | 保留 |
-| 内容为空或全空白 | MainWindow | 不创建气泡，提示“消息不能为空” | 保留 |
-| 内容超过限制 | MainWindow | 显示“消息过长”，不调用网络层 | 保留 |
-| 未认证或已断线时发送 | ChatClient | `chatSendFailed`；发送按钮禁用 | 保留 |
-| 服务端返回 error 帧 | ChatClient | 对应 pending 气泡标记“发送失败”，可复制重发 | 保留 |
-| 接收者不在线 | Server -> error 帧 | 系统消息“对方当前不在线” | 保留 |
-| JSON/协议头非法 | ChatClient | `protocolError`，显示连接异常并断开 | 保留 |
-| 认证后的连接断开 | MainWindow | 显示“连接已断开，请重新登录”；保留本地会话与未发送文本 | 保留 |
+| 场景                       | 处理者               | UI 表现                        | 是否保留输入   |
+|--------------------------|-------------------|------------------------------|----------|
+| HTTP 登录失败、响应缺少 token 或超时 | LoginDialog       | 登录框内显示原因、恢复登录/注册按钮           | 保留用户名和密码 |
+| 认证阶段 TCP 连接失败或认证被拒绝      | LoginDialog       | 登录框内显示原因，不关闭对话框              | 保留用户名和密码 |
+| 用户关闭或取消登录框               | main.cpp          | 不创建 MainWindow，程序正常退出        | 不适用      |
+| 接收者为空/格式非法               | MainWindow        | 输入框下方红字“请输入有效用户名”            | 保留       |
+| 内容为空或全空白                 | MainWindow        | 不创建气泡，提示“消息不能为空”             | 保留       |
+| 内容超过限制                   | MainWindow        | 显示“消息过长”，不调用网络层              | 保留       |
+| 未认证或已断线时发送               | ChatClient        | `chatSendFailed`；发送按钮禁用      | 保留       |
+| 服务端返回 error 帧            | ChatClient        | 对应 pending 气泡标记“发送失败”，可复制重发  | 保留       |
+| 接收者不在线                   | Server -> error 帧 | 系统消息“对方当前不在线”                | 保留       |
+| JSON/协议头非法               | ChatClient        | `protocolError`，显示连接异常并断开    | 保留       |
+| 认证后的连接断开                 | MainWindow        | 显示“连接已断开，请重新登录”；保留本地会话与未发送文本 | 保留       |
 
-W8 不实现静默自动重连，避免在用户无感知时使用过期 token 建立新会话；重新登录的入口留待后续切片。所有网络回调都在 `QObject` 所在线程执行；本切片不创建额外 UI 线程。不得在 socket 回调中直接做阻塞 I/O 或长时间 JSON/文件操作。
+W8 不实现静默自动重连，避免在用户无感知时使用过期 token 建立新会话；重新登录的入口留待后续切片。所有网络回调都在 `QObject`
+所在线程执行；本切片不创建额外 UI 线程。不得在 socket 回调中直接做阻塞 I/O 或长时间 JSON/文件操作。
 
 ---
 
@@ -419,7 +429,8 @@ W8 不实现静默自动重连，避免在用户无感知时使用过期 token �
 
 一次只推进一个模块，完成当前验收后再进入下一项。
 
-1. **窗口职责与生命周期**：新建 `LoginDialog`，把登录/注册控件和 HTTP 提示迁入；`main.cpp` 创建应用级 `ChatClient`，用 `exec()/Accepted` 决定是否创建 `MainWindow`。
+1. **窗口职责与生命周期**：新建 `LoginDialog`，把登录/注册控件和 HTTP 提示迁入；`main.cpp` 创建应用级 `ChatClient`，用
+   `exec()/Accepted` 决定是否创建 `MainWindow`。
 2. **协议先行**：补全 `ChatPayloadResult` 与服务端错误响应；为合法/非法 JSON 添加测试。
 3. **ChatClient**：实现 `sendChatMessage()`、type=chat 解析、聊天信号，以及登录阶段与聊天阶段的状态边界。
 4. **聊天窗口骨架**：`MainWindow` 只保留三栏聊天控件树；先验证销毁 `LoginDialog` 后连接仍保持可用。

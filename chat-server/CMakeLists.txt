@@ -54,6 +54,7 @@ add_executable(chat-server
         src/repository/mysql_connection.cpp
         src/repository/mysql_message_repository.cpp
         src/auth/asio_auth_introspection_client.cpp
+        src/auth/http_response_parser.cpp
         app/server_runtime_config.cpp
         app/message_repository_factory.cpp
         app/auth_introspection_config.cpp
