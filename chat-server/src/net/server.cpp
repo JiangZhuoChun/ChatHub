@@ -1,6 +1,7 @@
 #include "net/server.h"
 #include "net/session.h"
 #include "protocol/chat_payload.h"
+#include "auth/asio_auth_introspection_client.h"
 
 #include <boost/json.hpp>
 #include <openssl/rand.h>
@@ -151,6 +152,8 @@ Server::Server(asio::io_context &io_context, const std::uint16_t port, std::stri
       m_auth_introspection_config(std::move(auth_introspection_config)),
       m_message_repository(std::move(message_repository)), m_database_available(m_message_repository != nullptr)
 {
+
+    m_auth_introspection_client =std::make_shared<auth::AsioAuthIntrospectionClient>(io_context,m_auth_introspection_config);
     if (!m_database_available)
     {
         std::cerr << "SQLite 初始化失败：聊天持久化暂不可用" << std::endl;
@@ -230,7 +233,9 @@ void Server::doAccept()
                     };
 
                     const auto session = std::make_shared<Session>(
-                        std::move(m_pending_socket), session_id, m_authentication_timeout, std::move(on_message),
+                        std::move(m_pending_socket), session_id, m_authentication_timeout,
+                        m_auth_introspection_client,
+                        std::move(on_message),
                         std::move(on_disconnect), std::move(on_authentication_requested),
                         std::move(on_authentication_timeout));
                     addSession(session_id, session);

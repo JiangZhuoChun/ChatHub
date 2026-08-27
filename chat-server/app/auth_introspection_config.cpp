@@ -27,15 +27,22 @@ bool isBlank(const std::string_view text)
     {
         return true;
     }
-    return std::all_of(text.begin(),text.end(),[](char c) {
+    return std::all_of(text.begin(),text.end(),[](const char c) {
         return std::isspace(static_cast<unsigned char>(c));
     }) != 0;
 }
 bool hasWhitespaceOrControl(const std::string_view text)
 {
-    return std::any_of(text.begin(),text.end(),[](char c) {
+    return std::any_of(text.begin(),text.end(),[](const char c) {
        const auto value =static_cast<unsigned char>(c);
         return std::isspace(value) != 0 || std::iscntrl(value) != 0;
+    });
+}
+bool hasControlCharacter(const std::string_view text)
+{
+    return std::any_of(text.begin(),text.end(),[](const char c) {
+        const auto value = static_cast<unsigned char>(c);
+        return std::iscntrl(value) != 0;
     });
 }
 std::string_view readEnvironmentValue(const char *variable_name)
@@ -78,6 +85,10 @@ AuthIntrospectionConfigResult parseAuthIntrospectionConfig(const std::string_vie
     {
         return makeError(AuthIntrospectionConfigError::missing_internal_service_key);
     }
+    if (hasControlCharacter(internal_service_key))
+    {
+        return makeError(AuthIntrospectionConfigError::invalid_internal_service_key);
+    }
     // 3. URL 长度限制
     if (url_text.length() > MAX_URL_LENGTH)
     {
@@ -115,7 +126,8 @@ AuthIntrospectionConfigResult parseAuthIntrospectionConfig(const std::string_vie
         target_text.empty() ||
         target_text.front() != '/' ||
         target_text.find('?') != std::string_view::npos ||
-        target_text.find('#') != std::string_view::npos)
+        target_text.find('#') != std::string_view::npos ||
+        hasWhitespaceOrControl(target_text))
     {
         return makeError(AuthIntrospectionConfigError::invalid_url);
     }
@@ -189,6 +201,8 @@ std::string_view authIntrospectionConfigErrorCode(const AuthIntrospectionConfigE
 {
     switch (error)
     {
+        case AuthIntrospectionConfigError::none:
+            return "";
         case AuthIntrospectionConfigError::invalid_timeout:
             return "invalid_auth_introspection_timeout";
         case AuthIntrospectionConfigError::invalid_url:
@@ -197,9 +211,9 @@ std::string_view authIntrospectionConfigErrorCode(const AuthIntrospectionConfigE
             return "missing_auth_internal_service_key";
         case AuthIntrospectionConfigError::missing_url:
             return "missing_auth_introspection_url";
-        case AuthIntrospectionConfigError::none:
-            return "";
-    }
+        case AuthIntrospectionConfigError::invalid_internal_service_key:
+            return "invalid_auth_internal_service_key";
+        }
     return "unknown";
 }
 } // namespace app

@@ -3,15 +3,11 @@
 #include "protocol/chat_payload.h"
 
 #include <boost/json.hpp>
-#include <jwt-cpp/jwt.h>
 
 #include <chrono>
 #include <iostream>
 #include <mutex>
 #include <sstream>
-// ==================== 模块：令牌验证配置 ====================
-// 功能：保存当前开发环境用于验证 HS256 令牌的密钥。
-const std::string SECRET_KEY = "chathub-dev-secret";
 
 namespace net
 {
@@ -19,12 +15,14 @@ namespace net
 // ==================== 模块：生命周期与对外发送 ====================
 // 功能：接管 Socket，创建会话 strand，并保存由 Server 注入的三个回调。
 Session::Session(asio::ip::tcp::socket socket, SessionId session_id, std::chrono::milliseconds authentication_timeout,
-                 MessageCallback on_message, DisconnectCallback on_disconnect,
-                 AuthenticationRequestedCallback on_authentication_requested,
+                 std::shared_ptr<auth::IAuthIntrospectionClient> auth_introspection_client, MessageCallback on_message,
+                 DisconnectCallback on_disconnect, AuthenticationRequestedCallback on_authentication_requested,
                  AuthenticationTimeoutCallback on_authentication_timeout)
     : m_socket(std::move(socket)), m_strand(m_socket.get_executor()), m_authentication_timer(m_strand),
-      m_authentication_timeout(authentication_timeout), m_on_message(std::move(on_message)), m_id(session_id),
-      m_on_disconnect(std::move(on_disconnect)), on_authentication_requested(std::move(on_authentication_requested)),
+      m_authentication_timeout(authentication_timeout),
+      m_auth_introspection_client(std::move(auth_introspection_client)), m_on_message(std::move(on_message)),
+      m_id(session_id), m_on_disconnect(std::move(on_disconnect)),
+      on_authentication_requested(std::move(on_authentication_requested)),
       m_on_authentication_timeout(std::move(on_authentication_timeout))
 {
 }
@@ -153,6 +151,52 @@ void Session::handleAuthenticationDeadlineOnStrand(const std::error_code &error)
     else
     {
         closeOnStrand();
+    }
+}
+void Session::handleIntrospectionResultOnStrand(auth::IntrospectionResult result)
+{
+    // 迟到的 introspection 结果不再改变已经终态的 Session。
+    if (m_disconnected || !m_authentication_pending || m_close_after_write)
+    {
+        return;
+    }
+    switch (result.status)
+    {
+    case auth::IntrospectionStatus::active: {
+        // Auth Service 返回的身份仍必须符合 ChatHub 本地用户名合同。
+        if (!protocol::isValidUsername(result.username))
+        {
+            rejectAuthenticationOnStrand(makeAuthError("authentication_dependency_unavailable", "认证服务暂时不可用"),
+                                         "authentication_dependency_unavailable");
+            return;
+        }
+        if (on_authentication_requested)
+        {
+            on_authentication_requested(m_id, result.username);
+        }
+        else
+        {
+            // Server 回调缺失属于组装/依赖故障。
+            rejectAuthenticationOnStrand(makeAuthError("authentication_dependency_unavailable", "认证服务暂时不可用"),
+                                         "authentication_dependency_unavailable");
+        }
+        return;
+    }
+    case auth::IntrospectionStatus::authentication_rejected: {
+        // 已确定 token 无效，属于凭证拒绝。
+        rejectAuthenticationOnStrand(makeAuthError("authentication_rejected", "认证失败"), "authentication_rejected");
+        return;
+    }
+    case auth::IntrospectionStatus::dependency_unavailable: {
+        // 无法安全判断 token，必须 fail-closed。
+        rejectAuthenticationOnStrand(makeAuthError("authentication_dependency_unavailable", "认证服务暂时不可用"),
+                                     "authentication_dependency_unavailable");
+        return;
+    }
+    default:
+        // 未来新增未知状态时，也不能默认放行。
+        rejectAuthenticationOnStrand(makeAuthError("authentication_dependency_unavailable", "认证服务暂时不可用"),
+                                     "authentication_dependency_unavailable");
     }
 }
 
@@ -296,38 +340,6 @@ void Session::startNextHistoryResultBody()
     enqueueAndWrite(protocol::MessageType::history_result, body);
 }
 
-// ==================== 模块：认证与业务消息分派 ====================
-// 功能：使用服务端密钥验证 HS256 令牌，并从载荷中提取用户名。
-// 失败：令牌解码、签名校验或用户名提取抛出异常时返回 false。
-Session::JwtVerificationResult Session::verifyJwt(const std::string &token, std::string &out_username)
-{
-    try
-    {
-        const auto decoded = jwt::decode(token);
-        const auto verifier = jwt::verify().allow_algorithm(jwt::algorithm::hs256{SECRET_KEY});
-        verifier.verify(decoded);
-        try
-        {
-            const auto username = decoded.get_payload_claim("username").as_string();
-
-            if (!protocol::isValidUsername(username))
-            {
-                return JwtVerificationResult::invalid_username_claim;
-            }
-            out_username = username;
-            return JwtVerificationResult::accepted;
-        }
-        catch (const std::exception &)
-        {
-            return JwtVerificationResult::invalid_username_claim;
-        }
-    }
-    catch (const std::exception &)
-    {
-        return JwtVerificationResult::invalid_token;
-    }
-}
-
 // 功能：构造包含聊天错误范围、错误码、错误说明和可选 local_id 的 JSON 正文。
 std::string Session::makeChatError(const std::string &local_id, const std::string &code, const std::string &message)
 {
@@ -373,33 +385,22 @@ void Session::handlerMessage(const protocol::Message &message)
     {
         if (message.type == protocol::MessageType::auth)
         {
-            std::string username;
-            const auto verification = verifyJwt(message.body, username);
-            if (verification == JwtVerificationResult::accepted)
-            {
-                // 是拒绝发送期间的生命周期状态：它不表示认证成功，
-                // 而是阻止该连接继续处理业务帧，直到 error 写完并关闭。
-                m_authentication_pending = true;
+            m_authentication_pending = true;
 
-                if (on_authentication_requested)
-                {
-                    on_authentication_requested(m_id, username);
-                }
-                else
-                {
-                    closeOnStrand();
-                }
-                return;
-            }
-            if (verification == JwtVerificationResult::invalid_username_claim)
+            if (!m_auth_introspection_client)
             {
-                m_authentication_pending = true;
-                rejectAuthenticationOnStrand(makeAuthError("invalid_username_claim", "JWT 用户名不合法"),
-                                             "invalid_username_claim");
+                rejectAuthenticationOnStrand(
+                    makeAuthError("authentication_dependency_unavailable", "认证服务暂时不可用"),
+                    "authentication_dependency_unavailable");
                 return;
             }
-            log("auth", "authentication_rejected", "jwt_verification_failed");
-            closeOnStrand();
+
+            const auto self = shared_from_this();
+            m_auth_introspection_client->introspect(message.body, [self](auth::IntrospectionResult result) mutable {
+                asio::post(self->m_strand, [self, result = std::move(result)]() mutable {
+                    self->handleIntrospectionResultOnStrand(std::move(result));
+                });
+            });
             return;
         }
 

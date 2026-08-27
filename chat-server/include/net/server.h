@@ -1,8 +1,8 @@
 #pragma once
 
+#include "auth/auth_introspection_client.h"
 #include "net/session.h"
 #include "repository/message_repository_contract.h"
-#include "auth/auth_introspection_client.h"
 
 #include <chrono>
 #include <memory>
@@ -127,6 +127,8 @@ class Server
     PendingDeliveryMap m_pendingDeliveries;
 
     auth::AuthIntrospectionConfig m_auth_introspection_config;
+
+    std::shared_ptr<auth::IAuthIntrospectionClient>m_auth_introspection_client;
 
     std::unique_ptr<repository::IMessageRepository> m_message_repository;
 

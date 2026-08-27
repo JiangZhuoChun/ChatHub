@@ -1,6 +1,7 @@
 #pragma once
 
 #include "protocol/frame_decoder.h"
+#include "auth/auth_introspection_client.h"
 
 #include <asio.hpp>
 
@@ -53,10 +54,13 @@ class Session : public std::enable_shared_from_this<Session>
   public:
     // ==================== 模块：生命周期与对外发送 ====================
     // 功能：接管已接受的 Socket，并保存消息、断开和认证准入请求回调。
-    Session(asio::ip::tcp::socket socket, SessionId session_id, std::chrono::milliseconds authentication_timeout,
+    Session(asio::ip::tcp::socket socket, SessionId session_id,
+            std::chrono::milliseconds authentication_timeout,
+            std::shared_ptr<auth::IAuthIntrospectionClient> auth_introspection_client,
             MessageCallback on_message, DisconnectCallback on_disconnect,
             AuthenticationRequestedCallback on_authentication_requested,
-            AuthenticationTimeoutCallback on_authentication_timeout);
+            AuthenticationTimeoutCallback on_authentication_timeout
+            );
 
     // 功能：将首个异步读取任务投递到本会话 strand，开始处理客户端字节流。
     void start();
@@ -87,6 +91,8 @@ class Session : public std::enable_shared_from_this<Session>
 
     void handleAuthenticationDeadlineOnStrand(const std::error_code &error);
 
+    void handleIntrospectionResultOnStrand(auth::IntrospectionResult result);
+
     // ==================== 模块：异步读取与帧解码 ====================
     // 功能：异步读取 Socket 字节，交给帧解码器处理后继续安排下一次读取。
     // 失败：读取或协议解码失败时关闭会话并通知 Server 清理在线记录。
@@ -103,15 +109,6 @@ class Session : public std::enable_shared_from_this<Session>
     // 功能：仅在通用写队列为空时，将下一块历史正文交给通用写队列发送。
     void startNextHistoryResultBody();
 
-    // ==================== 模块：认证与业务消息分派 ====================
-    enum class JwtVerificationResult
-    {
-        accepted,
-        invalid_token,
-        invalid_username_claim
-    };
-    // 功能：验证令牌并提取用户名，供认证阶段更新会话身份。
-    static JwtVerificationResult verifyJwt(const std::string &token, std::string &out_username);
 
     // 功能：构造包含 local_id 的聊天错误 JSON，供客户端定位失败气泡。
     static std::string makeChatError(const std::string &local_id, const std::string &code, const std::string &message);
@@ -149,6 +146,8 @@ class Session : public std::enable_shared_from_this<Session>
     asio::steady_timer m_authentication_timer;
 
     const std::chrono::milliseconds m_authentication_timeout;
+
+    std::shared_ptr<auth::IAuthIntrospectionClient> m_auth_introspection_client;
 
     // 功能：缓存半包和粘包并还原完整协议帧。
     protocol::FrameDecoder m_decoder;
