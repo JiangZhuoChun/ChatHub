@@ -15,6 +15,7 @@ const {createApp} = require('../src/app');
 const {createDatabase} = require('../src/db');
 const {createJwtRevocationStore} = require('../src/jwt_revocation_store');
 const {closeHttpServer} = require('../src/server');
+const {requestJson, requestJsonWithRetryAfter} = require('./http_test_helpers');
 
 const redisUrl = process.env.CHATHUB_REDIS_TEST_URL;
 
@@ -40,25 +41,6 @@ function listenOnLoopback(app) {
         });
         httpServer.once('error', onStartupError);
     });
-}
-
-// 功能：统一发出 HTTP 请求并读取 JSON 响应，避免测试正文重复处理 response.json()。
-async function requestJson(baseUrl, route, options = {}) {
-    const response = await fetch(`${baseUrl}${route}`, options);
-    return {
-        status: response.status,
-        body: await response.json()
-    };
-}
-
-// 功能：在读取 JSON 的同时读取 429 合同中的 Retry-After 响应头。
-async function requestJsonWithRetryAfter(baseUrl, route, options = {}) {
-    const response = await fetch(`${baseUrl}${route}`, options);
-    return {
-        status: response.status,
-        body: await response.json(),
-        retryAfter: response.headers.get('retry-after')
-    };
 }
 
 // 功能：在明确截止时间内轮询 Redis，确认 username/IP 两个失败 key 都已过期。
@@ -143,7 +125,7 @@ async function closeTestResources({httpServer, redisClient, redisKeys, db, tempD
     }
 }
 
-test('真实 Redis、临时 SQLite 与 HTTP 的登录限流联调', async t => {
+test('当真实 Redis、临时 SQLite 和 HTTP 协同运行时，登录限流应执行双维度门禁', {timeout: 20000}, async t => {
     const runId = randomUUID().replace(/-/g, '');
     const username = `http_test_${runId.slice(0, 8)}`;
     const password = 'password123';

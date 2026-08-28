@@ -76,11 +76,14 @@ bool runTest(const char *name, bool passed) {
 
 int main() {
   const bool status_passed =
-      runTest("HTTP status line contract", testStatusLineContract());
+      runTest("当 HTTP 状态行格式合法或非法时，状态码解析应返回对应结果",
+              testStatusLineContract());
   const bool content_length_passed = runTest(
-      "HTTP Content-Length framing contract", testContentLengthContract());
+      "当响应头包含 Content-Length 时，长度解析应拒绝重复或越界声明",
+      testContentLengthContract());
   const bool json_passed =
-      runTest("introspection JSON body contract", testJsonBodyContract());
+      runTest("当 introspection 响应正文合法或非法时，JSON 解析应返回对应身份或错误码",
+              testJsonBodyContract());
   return status_passed && content_length_passed && json_passed ? EXIT_SUCCESS
                                                                : EXIT_FAILURE;
 }

@@ -13,7 +13,7 @@ function baseEnvironment() {
     };
 }
 
-test('server 配置必须包含 Redis、JWT 和 Auth 内部服务密钥', () => {
+test('当 Auth 内部服务密钥缺失时，配置解析应拒绝启动', () => {
     const environment = baseEnvironment();
     delete environment.CHATHUB_AUTH_INTERNAL_SERVICE_KEY;
 
@@ -24,7 +24,7 @@ test('server 配置必须包含 Redis、JWT 和 Auth 内部服务密钥', () => 
     );
 });
 
-test('server 配置校验后只返回可用的规范化副本', () => {
+test('当环境配置包含可清理的文本值时，配置解析应返回规范化副本', () => {
     const environment = {
         ...baseEnvironment(),
         CHATHUB_REDIS_URL: ' redis://127.0.0.1:6379 ',
@@ -48,7 +48,7 @@ test('server 配置校验后只返回可用的规范化副本', () => {
     });
 });
 
-test('server 配置拒绝非正整数和 IP 限额低于用户名限额', () => {
+test('当限流参数不是正整数或 IP 限额过低时，配置解析应拒绝启动', () => {
     const invalid_window = {
         ...baseEnvironment(),
         CHATHUB_LOGIN_WINDOW_SECONDS: '0'

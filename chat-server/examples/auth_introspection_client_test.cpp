@@ -319,16 +319,17 @@ bool runTest(const char *name, bool passed) {
 
 int main() {
   const bool active_passed = runTest(
-      "introspection active response and request contract",
+      "当 Auth 返回有效身份时，introspection 客户端应完成请求并返回 active",
       testActiveResponseAndRequestContract());
   const bool status_passed = runTest(
-      "introspection authentication and dependency statuses",
+      "当 Auth 返回认证拒绝或依赖故障时，introspection 客户端应映射对应状态",
       testAuthenticationAndDependencyStatuses());
   const bool framing_passed = runTest(
-      "introspection malformed framing and body statuses",
+      "当 Auth 响应分帧或正文非法时，introspection 客户端应拒绝半成品",
       testMalformedFramingAndBodyStatuses());
   const bool lifecycle_passed =
-      runTest("introspection timeout and cancellation", testTimeoutAndCancellation());
+      runTest("当 introspection 超时或被取消时，请求应在截止时间内结束",
+              testTimeoutAndCancellation());
   return active_passed && status_passed && framing_passed && lifecycle_passed
              ? EXIT_SUCCESS
              : EXIT_FAILURE;

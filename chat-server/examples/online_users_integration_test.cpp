@@ -1529,27 +1529,27 @@ bool runTest(const char *name, const bool passed)
 int main()
 {
     const bool two_users_passed =
-        runTest("two users receive one shared online snapshot in order", testTwoUsersReceiveOneSharedSnapshotInOrder());
+        runTest("当两个用户在线时，双方应按顺序收到同一份在线快照", testTwoUsersReceiveOneSharedSnapshotInOrder());
     const bool capacity_passed =
-        runTest("online snapshot capacity boundary and recovery", testCapacityBoundaryAndRecovery());
-    const bool database_unavailable_passed = runTest("database unavailable keeps authenticated sessions alive",
+        runTest("当在线快照达到容量边界并恢复时，服务应拒绝超限并恢复发送", testCapacityBoundaryAndRecovery());
+    const bool database_unavailable_passed = runTest("当数据库不可用时，已认证会话应保持连接",
                                                      testDatabaseUnavailableKeepsAuthenticatedSessionsAlive());
     const bool takeover_passed =
-        runTest("same username takeover keeps current mapping", testSameUsernameTakeoverKeepsCurrentMapping());
+        runTest("当同一用户名重复登录时，服务应只保留当前会话映射", testSameUsernameTakeoverKeepsCurrentMapping());
     const bool unauthenticated_timeout_passed =
-        runTest("unauthenticated ping times out", testUnauthenticatedPingTimesOut());
+        runTest("当会话未完成认证时，超时应关闭连接", testUnauthenticatedPingTimesOut());
     const bool authenticated_deadline_cancelled =
-        runTest("authenticated session cancels deadline", testAuthenticatedSessionCancelsDeadline());
-    const bool structured_error_logs = runTest("session structured error logs", testSessionStructuredErrorLogs());
+        runTest("当会话完成认证时，认证截止定时器应被取消", testAuthenticatedSessionCancelsDeadline());
+    const bool structured_error_logs = runTest("当会话发生协议错误时，日志应包含结构化字段", testSessionStructuredErrorLogs());
     const bool introspection_status_mapping =
-        runTest("introspection status mapping", testIntrospectionStatusMapping());
+        runTest("当 introspection 返回拒绝或依赖故障时，会话应映射错误并关闭", testIntrospectionStatusMapping());
     const bool introspection_cancelled =
-        runTest("pending introspection cancelled on session close", testSessionCloseCancelsPendingIntrospection());
-    const bool three_account_relay = runTest("three_account_relay", testThreeAccountRelay());
+        runTest("当会话关闭时，未完成的 introspection 请求应被取消", testSessionCloseCancelsPendingIntrospection());
+    const bool three_account_relay = runTest("当三个账户在线通信时，消息应正确转发", testThreeAccountRelay());
     const bool three_account_takeover =
-        runTest("three account same username takeover", testThreeAccountSameUsernameTakeover());
+        runTest("当三个账户出现同名登录时，旧会话应被接管", testThreeAccountSameUsernameTakeover());
     const bool three_account_reconnect =
-        runTest("three account reconnect after disconnect", testThreeAccountReconnectAfterDisconnect());
+        runTest("当三个账户断开后重连时，在线映射应恢复", testThreeAccountReconnectAfterDisconnect());
     const bool passed = two_users_passed && capacity_passed && database_unavailable_passed && takeover_passed &&
                         unauthenticated_timeout_passed && authenticated_deadline_cancelled && structured_error_logs &&
                         introspection_status_mapping && introspection_cancelled && three_account_relay &&

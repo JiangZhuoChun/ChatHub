@@ -899,3 +899,13 @@ Git 规则：
 - **当前未产生的证据**：真实跨进程 Auth Service ↔ ChatServer 的共享 JWT/撤销闭环尚未实现；W12-3 6.6 中“logout 后新 TCP 认证拒绝”和“重启两个服务后撤销仍生效”尚只有分层组件证据，不能宣称端到端完成；CTest 中 10 个 MySQL 环境专项按缺少配置返回 SKIP，不计为通过。
 - **下一待办项**：W12 先保留上述跨进程闭环作为明确未完成项；待用户说“下一步”后再决定是否补跨进程验收或进入 W13，不自动扩大范围。
 - **掌握状态**：第 9J 小步的生产代码审查和复盘问题 137～142 均已通过；用户能够区分 `weak_ptr` 的生命周期保护与 `asio::post(Session strand)` 的并发串行化作用，达到本步掌握标准。
+
+### W12 收尾补充：测试规范复核（2026-08-28）
+
+针对本轮测试收尾又按以下门禁复核了一遍：
+
+- 受影响的 Node.js 与 C++ 测试输出均改为清晰的中文前置条件/行为/预期描述；变量、函数、类和文件名仍保持英文；
+- `auth-service/test/http_test_helpers.js` 统一提供带 `AbortSignal.timeout()` 的 JSON 请求 helper，避免各 HTTP 测试重复实现请求超时；`requestJsonWithRetryAfter()` 继续只承担 `Retry-After` 读取；
+- Redis、HTTP、并发和子进程测试均有测试级 timeout 或内部 deadline；TTL 到期仍使用有界轮询，不使用固定时刻断言；
+- 每个测试仍按 Arrange → Act → Assert 组织，并同时检查成功结果、重要副作用和“不应发生”的调用/签发/监听；临时数据库、Redis key、HTTP server 和子进程均在测试生命周期结束时清理；
+- 本轮只调整测试组织与可观测性，没有降低既有业务断言，也没有修改生产业务合同。Node 测试 12/12 通过；完整 CTest 13 个通过、10 个 MySQL 环境专项明确 SKIP、0 个失败。

@@ -1106,7 +1106,7 @@ int runMySqlStartupTest(const std::filesystem::path &server_executable)
         return 77;
     }
 
-    return runTest("real MySQL startup reaches listening server",
+    return runTest("当真实 MySQL 启动配置完整时，ChatServer 应开始监听",
                    testMySqlStartupReachesRealServer(server_executable, *mysql_config))
                ? EXIT_SUCCESS
                : EXIT_FAILURE;
@@ -1121,7 +1121,7 @@ int runMySqlChatTest(const std::filesystem::path &server_executable)
         return 77;
     }
 
-    return runTest("real MySQL chat returns matching ack and recipient message",
+    return runTest("当真实 MySQL 保存聊天消息时，发送方应收到确认且接收方应收到消息",
                    testMySqlChatReachesAckAndRecipient(server_executable, *config))
                ? EXIT_SUCCESS
                : EXIT_FAILURE;
@@ -1136,7 +1136,7 @@ int runMySqlHistoryTest(const std::filesystem::path &server_executable)
         return 77;
     }
 
-    return runTest("real MySQL history survives chat-server restart",
+    return runTest("当 ChatServer 重启后，真实 MySQL 历史消息应保持不变",
                    testMySqlRestartPreservesSingleHistoryMessage(server_executable, *config))
                ? EXIT_SUCCESS
                : EXIT_FAILURE;
@@ -1151,7 +1151,7 @@ int runMySqlSchemaFailureTest(const std::filesystem::path &server_executable)
         return 77;
     }
 
-    return runTest("real MySQL schema failure exits without listener",
+    return runTest("当真实 MySQL schema 初始化失败时，ChatServer 应退出且不监听",
                    testMySqlSchemaFailureExitsWithoutListener(server_executable, *mysql_config))
                ? EXIT_SUCCESS
                : EXIT_FAILURE;
@@ -1212,15 +1212,15 @@ int main(int argc, char *argv[])
         }
     }
 
-    const bool invalid_config_passed = runTest("invalid configuration exits without listener or database",
+    const bool invalid_config_passed = runTest("当配置非法时，ChatServer 应退出且不监听或创建数据库",
                                                testInvalidConfigurationHasNoSideEffects(server_executable));
     const bool custom_config_passed =
-        runTest("custom port, database path, and authentication timeout reach the process",
+        runTest("当端口、数据库路径和认证超时可配置时，ChatServer 应按配置启动",
                 testCustomConfigurationReachesRealServer(server_executable));
     const bool missing_mysql_password_passed =
-        runTest("missing MySQL password exits without listener", testMissingMySqlPasswordExitsWithoutListener(server_executable));
+        runTest("当 MySQL 密码缺失时，ChatServer 应退出且不监听", testMissingMySqlPasswordExitsWithoutListener(server_executable));
     const bool mysql_connection_failure_passed =
-        runTest("MySQL connection failure exits without listener", testMySqlConnectionFailureExitsWithoutListener(server_executable));
+        runTest("当 MySQL 连接失败时，ChatServer 应退出且不监听", testMySqlConnectionFailureExitsWithoutListener(server_executable));
     return invalid_config_passed && custom_config_passed && missing_mysql_password_passed && mysql_connection_failure_passed
                ? EXIT_SUCCESS
                : EXIT_FAILURE;

@@ -43,7 +43,7 @@ async function waitForLimiterExpiry(limiter, identity, {
     throw new Error('concurrent_login_failure_expiry_timeout');
 }
 
-test('真实 Redis 固定窗口限流合同', async t => {
+test('当首次失败建立固定窗口时，后续失败应只增加计数而不重置 TTL', {timeout: 15000}, async t => {
     const runId = randomUUID().replace(/-/g, '');
     const username = `redis_test_${runId.slice(0, 8)}`;
     const sourceIp = '127.0.0.1';
@@ -116,7 +116,7 @@ test('真实 Redis 固定窗口限流合同', async t => {
     assert.ok(afterClear.source_ip.ttl_seconds > 0);
 });
 
-test('真实 Redis 并发失败计数精确且固定窗口不延长', async t => {
+test('当并发记录登录失败时，计数应精确且固定窗口不延长', {timeout: 20000}, async t => {
     const runId = randomUUID().replace(/-/g, '');
     const username = `rc_${runId.slice(0, 8)}`;
     const sourceIp = '127.0.0.1';

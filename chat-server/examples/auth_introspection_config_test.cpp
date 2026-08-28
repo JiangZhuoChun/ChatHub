@@ -139,16 +139,17 @@ bool runTest(const char *name, bool passed) {
 
 int main() {
   const bool valid_passed =
-      runTest("auth introspection config valid values and defaults",
+      runTest("当 introspection 配置合法或省略可选项时，解析应返回规范化配置",
               testValidConfigAndDefaults());
   const bool invalid_passed =
-      runTest("auth introspection config invalid values",
+      runTest("当 introspection URL、密钥或超时非法时，配置解析应拒绝启动",
               testMissingAndInvalidValues());
   const bool mapping_passed =
-      runTest("auth introspection config stable error codes",
+      runTest("当 introspection 配置解析失败时，错误码映射应保持稳定",
               testStableErrorCodeMapping());
   const bool environment_passed =
-      runTest("auth introspection environment loader", testEnvironmentLoader());
+      runTest("当环境变量提供 introspection 配置时，加载器应返回已校验副本",
+              testEnvironmentLoader());
   return valid_passed && invalid_passed && mapping_passed && environment_passed
              ? EXIT_SUCCESS
              : EXIT_FAILURE;

@@ -15,6 +15,7 @@ const {createJwtRevocationStore} = require('../src/jwt_revocation_store');
 const {createApp} = require('../src/app');
 const {createDatabase} = require('../src/db');
 const {closeHttpServer} = require('../src/server');
+const {requestJson} = require('./http_test_helpers');
 
 const REDIS_URL = process.env.CHATHUB_REDIS_TEST_URL;
 if (typeof REDIS_URL !== 'string' || REDIS_URL.trim().length === 0) {
@@ -37,14 +38,6 @@ function listenOnLoopback(app) {
         });
         http_server.once('error', on_startup_error);
     });
-}
-
-async function requestJson(base_url, route, options = {}) {
-    const response = await fetch(`${base_url}${route}`, options);
-    return {
-        status: response.status,
-        body: await response.json()
-    };
 }
 
 function jsonRequest(method, body) {
@@ -79,7 +72,7 @@ function makeApp({db, redis_client, key_prefix, secret_key, internal_service_key
     });
 }
 
-test('真实 Redis 运行期断开时登录 fail-closed，重启依赖后可恢复', async t => {
+test('当真实 Redis 在运行期断开并恢复时，登录应先 fail-closed 后恢复', {timeout: 15000}, async t => {
     const run_id = randomUUID().replace(/-/g, '');
     const username = `runtime_${run_id.slice(0, 12)}`;
     const password = 'password123';

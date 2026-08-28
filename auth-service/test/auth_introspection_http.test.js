@@ -15,6 +15,7 @@ const {createJwtRevocationStore} = require('../src/jwt_revocation_store');
 const {createApp} = require('../src/app');
 const {createDatabase} = require('../src/db');
 const {closeHttpServer} = require('../src/server');
+const {requestJson} = require('./http_test_helpers');
 
 const REDIS_URL = process.env.CHATHUB_REDIS_TEST_URL;
 if (typeof REDIS_URL !== 'string' || REDIS_URL.trim().length === 0) {
@@ -37,14 +38,6 @@ function listenOnLoopback(app) {
         });
         http_server.once('error', on_startup_error);
     });
-}
-
-async function requestJson(base_url, route, options = {}) {
-    const response = await fetch(`${base_url}${route}`, options);
-    return {
-        status: response.status,
-        body: await response.json()
-    };
 }
 
 function jsonRequestBody(body) {
@@ -165,7 +158,7 @@ async function createFixture() {
     };
 }
 
-test('introspection 按内部凭证、请求格式和 JWT 顺序执行门禁', async t => {
+test('当 introspection 凭证或请求正文不合法时应在门禁拒绝，合法请求应返回身份', {timeout: 15000}, async t => {
     const fixture = await createFixture();
     t.after(() => closeResources(fixture));
 
@@ -280,7 +273,7 @@ test('introspection 按内部凭证、请求格式和 JWT 顺序执行门禁', a
     await closeHttpServer(http_server);
 });
 
-test('logout 建立撤销 marker，重复退出幂等且过期 token 不写 Redis', async t => {
+test('当 token 退出或已过期时，logout 应保持撤销幂等并避免无效写入', {timeout: 15000}, async t => {
     const fixture = await createFixture();
     t.after(() => closeResources(fixture));
 
@@ -379,7 +372,7 @@ test('logout 建立撤销 marker，重复退出幂等且过期 token 不写 Redi
     });
 });
 
-test('撤销查询 Redis 故障时 /me、introspection 和 logout 均返回 503', async t => {
+test('当 Redis 撤销查询不可用时，/me、introspection 和 logout 应返回 503', {timeout: 15000}, async t => {
     const fixture = await createFixture();
     t.after(() => closeResources(fixture));
 

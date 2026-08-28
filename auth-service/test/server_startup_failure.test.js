@@ -98,7 +98,7 @@ function waitForChildExit(child, {timeoutMs = 7000} = {}) {
     });
 }
 
-test('Redis 启动依赖失败时 Auth Service 不监听 HTTP 端口', async () => {
+test('当 Redis 启动依赖失败时，Auth Service 应退出且不监听 HTTP 端口', {timeout: 15000}, async () => {
     assert.equal(
         await probeTcpPort(authHttpPort),
         'ECONNREFUSED',

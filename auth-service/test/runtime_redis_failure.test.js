@@ -9,6 +9,7 @@ const path = require('node:path');
 const {createApp} = require('../src/app');
 const {createDatabase} = require('../src/db');
 const {closeHttpServer} = require('../src/server');
+const {requestJson} = require('./http_test_helpers');
 
 function listenOnLoopback(app) {
     return new Promise((resolve, reject) => {
@@ -26,14 +27,6 @@ function listenOnLoopback(app) {
         });
         http_server.once('error', on_startup_error);
     });
-}
-
-async function requestJson(base_url, route, options = {}) {
-    const response = await fetch(`${base_url}${route}`, options);
-    return {
-        status: response.status,
-        body: await response.json()
-    };
 }
 
 function loginRequest(username, password) {
@@ -97,7 +90,7 @@ function makeLimiter(calls) {
     return limiter;
 }
 
-test('运行期 Redis 故障在 inspect、recordFailure、clearUserFailures 三个门禁均 fail-closed', async t => {
+test('当 Redis 分别在 inspect、recordFailure、clearUserFailures 故障时，登录应在各门禁返回 503', {timeout: 15000}, async t => {
     const calls = {
         inspect: 0,
         record_failure: 0,
