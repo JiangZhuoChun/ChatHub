@@ -162,10 +162,11 @@ void Session::handleIntrospectionResultOnStrand(
     case auth::IntrospectionStatus::active: {
       // Auth Service 返回的身份仍必须符合 ChatHub 本地用户名合同。
       if (!protocol::isValidUsername(result.username)) {
+        // 保留 W10 已有的 wire error 合同：身份 claim 不合规是认证拒绝，
+        // 不能把一个可确定的身份格式错误伪装成依赖暂时不可用。
         rejectAuthenticationOnStrand(
-            makeAuthError("authentication_dependency_unavailable",
-                          "认证服务暂时不可用"),
-            "authentication_dependency_unavailable");
+            makeAuthError("invalid_username_claim", "认证失败"),
+            "invalid_username_claim");
         return;
       }
       if (on_authentication_requested) {

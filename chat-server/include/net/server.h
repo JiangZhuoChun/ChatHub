@@ -24,7 +24,9 @@ class Server
             std::string database_path,
             std::chrono::milliseconds authentication_timeout,
             auth::AuthIntrospectionConfig auth_introspection_config,
-            std::unique_ptr<repository::IMessageRepository> message_repository);
+            std::unique_ptr<repository::IMessageRepository> message_repository,
+            std::shared_ptr<auth::IAuthIntrospectionClient>
+                auth_introspection_client = nullptr);
 
     // 功能：输出监听信息并开始持续异步接受新的 TCP 连接。
     void start();

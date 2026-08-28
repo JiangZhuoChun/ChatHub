@@ -1173,6 +1173,18 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
+    // ChatServer 现在把 Auth introspection 配置作为启动必需依赖；
+    // 这些仅用于进程测试的非真实凭证通过父环境传给每个子进程，
+    // 测试仍然只验证启动/监听边界，不发起真实 introspection 请求。
+    if (_putenv_s("CHATHUB_AUTH_INTROSPECTION_URL",
+                  "http://127.0.0.1:3000/internal/auth/introspect") != 0 ||
+        _putenv_s("CHATHUB_AUTH_INTERNAL_SERVICE_KEY",
+                  "server-process-test-internal-key") != 0)
+    {
+        std::cerr << "failed to set Auth introspection test environment\n";
+        return EXIT_FAILURE;
+    }
+
     const std::filesystem::path server_executable = std::filesystem::absolute(argv[1]);
     if (argc == 3)
     {

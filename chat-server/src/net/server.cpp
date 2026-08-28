@@ -145,15 +145,22 @@ namespace net
 Server::Server(asio::io_context &io_context, const std::uint16_t port, std::string database_path,
                const std::chrono::milliseconds authentication_timeout,
                auth::AuthIntrospectionConfig auth_introspection_config,
-               std::unique_ptr<repository::IMessageRepository> message_repository)
+               std::unique_ptr<repository::IMessageRepository> message_repository,
+               std::shared_ptr<auth::IAuthIntrospectionClient>
+                   auth_introspection_client)
     : m_strand(asio::make_strand(io_context)),
       m_acceptor(io_context, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port)), m_pending_socket(io_context),
       m_database_path(std::move(database_path)), m_authentication_timeout(authentication_timeout),
       m_auth_introspection_config(std::move(auth_introspection_config)),
+      m_auth_introspection_client(std::move(auth_introspection_client)),
       m_message_repository(std::move(message_repository)), m_database_available(m_message_repository != nullptr)
 {
 
-    m_auth_introspection_client =std::make_shared<auth::AsioAuthIntrospectionClient>(io_context,m_auth_introspection_config);
+    if (!m_auth_introspection_client)
+    {
+        m_auth_introspection_client =
+            std::make_shared<auth::AsioAuthIntrospectionClient>(io_context, m_auth_introspection_config);
+    }
     if (!m_database_available)
     {
         std::cerr << "SQLite 初始化失败：聊天持久化暂不可用" << std::endl;

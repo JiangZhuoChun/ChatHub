@@ -112,6 +112,7 @@ test('Redis 启动依赖失败时 Auth Service 不监听 HTTP 端口', async () 
             ...process.env,
             CHATHUB_REDIS_URL: `redis://127.0.0.1:${redisPort}`,
             SECRET_KEY: `startup-${Date.now()}`,
+            CHATHUB_AUTH_INTERNAL_SERVICE_KEY: `startup-internal-${process.pid}`,
             CHATHUB_REDIS_KEY_PREFIX: `chathub:test:startup:${process.pid}`,
             CHATHUB_LOGIN_USER_LIMIT: '5',
             CHATHUB_LOGIN_IP_LIMIT: '20',

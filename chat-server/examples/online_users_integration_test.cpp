@@ -15,6 +15,7 @@
 #include <jwt-cpp/traits/kazuho-picojson/defaults.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -34,6 +35,114 @@ namespace
 
 using asio::ip::tcp;
 using namespace std::chrono_literals;
+
+// 功能：让既有的 Server/Session 集成场景使用确定的认证依赖，
+//       将 HTTP introspection 客户端本身的测试与在线用户业务测试分离。
+class TestIntrospectionRequest final : public auth::IAuthIntrospectionRequest
+{
+  public:
+    explicit TestIntrospectionRequest(std::shared_ptr<std::atomic_bool> cancellation_observed)
+        : m_cancellation_observed(std::move(cancellation_observed))
+    {
+    }
+
+    void cancel() override
+    {
+        m_cancelled.store(true);
+        if (m_cancellation_observed)
+        {
+            m_cancellation_observed->store(true);
+        }
+    }
+
+    bool cancelled() const
+    {
+        return m_cancelled.load();
+    }
+
+  private:
+    std::atomic_bool m_cancelled{false};
+    std::shared_ptr<std::atomic_bool> m_cancellation_observed;
+};
+
+class TestIntrospectionClient final : public auth::IAuthIntrospectionClient
+{
+  public:
+    explicit TestIntrospectionClient(asio::io_context &io_context,
+                                     std::optional<auth::IntrospectionResult> forced_result = std::nullopt,
+                                     const bool respond = true,
+                                     std::shared_ptr<std::atomic_bool> cancellation_observed = nullptr,
+                                     std::shared_ptr<std::atomic_bool> request_started = nullptr)
+        : m_io_context(io_context),
+          m_forced_result(std::move(forced_result)),
+          m_respond(respond),
+          m_cancellation_observed(std::move(cancellation_observed)),
+          m_request_started(std::move(request_started))
+    {
+    }
+
+    auth::IntrospectionRequestPtr introspect(std::string token,
+                                             auth::IntrospectionHandler handler) override
+    {
+        if (m_request_started)
+        {
+            m_request_started->store(true);
+        }
+        const auto request = std::make_shared<TestIntrospectionRequest>(m_cancellation_observed);
+        if (!m_respond)
+        {
+            return request;
+        }
+
+        asio::post(m_io_context,
+                   [request, forced_result = m_forced_result, token = std::move(token),
+                    handler = std::move(handler)]() mutable {
+                       if (request->cancelled())
+                       {
+                           return;
+                       }
+
+                       if (forced_result.has_value())
+                       {
+                           handler(*forced_result);
+                           return;
+                       }
+
+                       try
+                       {
+                           const auto decoded = jwt::decode(token);
+                           const auto username = decoded.get_payload_claim("username").as_string();
+                           handler({auth::IntrospectionStatus::active, username, {}});
+                       }
+                       catch (const std::exception &)
+                       {
+                           handler({auth::IntrospectionStatus::dependency_unavailable,
+                                    {},
+                                    "test_introspection_decode_failed"});
+                       }
+                   });
+        return request;
+    }
+
+  private:
+    asio::io_context &m_io_context;
+    std::optional<auth::IntrospectionResult> m_forced_result;
+    bool m_respond{true};
+    std::shared_ptr<std::atomic_bool> m_cancellation_observed;
+    std::shared_ptr<std::atomic_bool> m_request_started;
+};
+
+auth::AuthIntrospectionConfig makeTestAuthIntrospectionConfig()
+{
+    auth::AuthIntrospectionConfig config;
+    config.host = "127.0.0.1";
+    config.port = "1";
+    config.target = "/internal/auth/introspect";
+    config.internal_service_key = "test-internal-key";
+    config.timeout = 100ms;
+    config.max_response_body_bytes = 4096;
+    return config;
+}
 
 // 功能：与 Session 的开发环境验证密钥一致地生成只包含测试用户名的 HS256 JWT。
 std::string makeJwt(const std::string &username)
@@ -446,11 +555,20 @@ class ServerFixture
 {
   public:
     explicit ServerFixture(const std::string &database_path = "chathub.db",
-                           const std::chrono::milliseconds authentication_timeout = 5000ms)
+                           const std::chrono::milliseconds authentication_timeout = 5000ms,
+                           std::optional<auth::IntrospectionResult> forced_result = std::nullopt,
+                           const bool respond_to_introspection = true,
+                           std::shared_ptr<std::atomic_bool> cancellation_observed = nullptr,
+                           std::shared_ptr<std::atomic_bool> request_started = nullptr)
         : m_port(findAvailablePort()),
+          m_auth_introspection_client(std::make_shared<TestIntrospectionClient>(
+              m_server_io, std::move(forced_result), respond_to_introspection,
+              std::move(cancellation_observed), std::move(request_started))),
           // 测试夹具显式复用生产默认配置；ScopedTestDirectory 已隔离该数据库文件。
           m_server(std::make_unique<net::Server>(m_server_io, m_port, database_path, authentication_timeout,
-                                                 repository::createSqliteMessageRepository(database_path)))
+                                                  makeTestAuthIntrospectionConfig(),
+                                                  repository::createSqliteMessageRepository(database_path),
+                                                  m_auth_introspection_client))
     {
         m_server->start();
         m_server_thread = std::thread([this] { m_server_io.run(); });
@@ -477,6 +595,7 @@ class ServerFixture
   private:
     asio::io_context m_server_io;
     std::uint16_t m_port;
+    std::shared_ptr<TestIntrospectionClient> m_auth_introspection_client;
     std::unique_ptr<net::Server> m_server;
     std::thread m_server_thread;
 };
@@ -860,6 +979,97 @@ bool testSessionStructuredErrorLogs()
     catch (const std::exception &error)
     {
         std::cerr << "会话结构化错误日志测试异常：" << error.what() << '\n';
+        return false;
+    }
+}
+
+// 功能：验证 Auth introspection 的“确定拒绝”和“依赖故障”都不会进入在线用户表，
+//       并且分别使用稳定的 auth 错误码后关闭当前连接。
+bool testIntrospectionStatusMapping()
+{
+    struct StatusCase
+    {
+        auth::IntrospectionStatus status;
+        const char *expected_code;
+        const char *diagnostic_code;
+    };
+
+    const StatusCase cases[] = {
+        {auth::IntrospectionStatus::authentication_rejected,
+         "authentication_rejected", ""},
+        {auth::IntrospectionStatus::dependency_unavailable,
+         "authentication_dependency_unavailable", "stub_unavailable"},
+    };
+
+    try
+    {
+        for (const auto &test_case : cases)
+        {
+            ScopedTestDirectory test_directory;
+            ServerFixture server(
+                "chathub.db", 1000ms,
+                auth::IntrospectionResult{test_case.status, {}, test_case.diagnostic_code});
+            asio::io_context client_io;
+            auto client = connectClient(client_io, server.port());
+
+            if (!sendAuth(client, "alice") ||
+                !isAuthenticationErrorWithCode(readFrameWithDeadline(client, 2s),
+                                               test_case.expected_code) ||
+                !waitForSocketClosed(client, 2s))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    catch (const std::exception &error)
+    {
+        std::cerr << "introspection 状态映射测试异常：" << error.what() << '\n';
+        return false;
+    }
+}
+
+// 功能：验证 Session 在 introspection 尚未返回时关闭，会取消请求句柄，
+//       迟到的结果不能再把已关闭会话推进到认证成功。
+bool testSessionCloseCancelsPendingIntrospection()
+{
+    try
+    {
+        ScopedTestDirectory test_directory;
+        const auto request_started = std::make_shared<std::atomic_bool>(false);
+        const auto cancellation_observed = std::make_shared<std::atomic_bool>(false);
+        ServerFixture server("chathub.db", 5000ms, std::nullopt, false,
+                             cancellation_observed, request_started);
+        asio::io_context client_io;
+        auto client = connectClient(client_io, server.port());
+        if (!sendAuth(client, "alice"))
+        {
+            return false;
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (!request_started->load() && std::chrono::steady_clock::now() < deadline)
+        {
+            ::Sleep(1);
+        }
+        if (!request_started->load())
+        {
+            return false;
+        }
+
+        std::error_code close_error;
+        client.shutdown(tcp::socket::shutdown_both, close_error);
+        client.close(close_error);
+
+        while (!cancellation_observed->load() && std::chrono::steady_clock::now() < deadline)
+        {
+            ::Sleep(1);
+        }
+        return cancellation_observed->load();
+    }
+    catch (const std::exception &error)
+    {
+        std::cerr << "introspection 取消测试异常：" << error.what() << '\n';
         return false;
     }
 }
@@ -1331,6 +1541,10 @@ int main()
     const bool authenticated_deadline_cancelled =
         runTest("authenticated session cancels deadline", testAuthenticatedSessionCancelsDeadline());
     const bool structured_error_logs = runTest("session structured error logs", testSessionStructuredErrorLogs());
+    const bool introspection_status_mapping =
+        runTest("introspection status mapping", testIntrospectionStatusMapping());
+    const bool introspection_cancelled =
+        runTest("pending introspection cancelled on session close", testSessionCloseCancelsPendingIntrospection());
     const bool three_account_relay = runTest("three_account_relay", testThreeAccountRelay());
     const bool three_account_takeover =
         runTest("three account same username takeover", testThreeAccountSameUsernameTakeover());
@@ -1338,6 +1552,7 @@ int main()
         runTest("three account reconnect after disconnect", testThreeAccountReconnectAfterDisconnect());
     const bool passed = two_users_passed && capacity_passed && database_unavailable_passed && takeover_passed &&
                         unauthenticated_timeout_passed && authenticated_deadline_cancelled && structured_error_logs &&
-                        three_account_relay && three_account_takeover && three_account_reconnect;
+                        introspection_status_mapping && introspection_cancelled && three_account_relay &&
+                        three_account_takeover && three_account_reconnect;
     return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

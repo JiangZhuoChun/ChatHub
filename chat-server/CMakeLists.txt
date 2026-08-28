@@ -128,6 +128,8 @@ add_executable(history_response_test
         src/protocol/frame_decoder.cpp
         src/protocol/chat_payload.cpp
         src/repository/sqlite_message_repository.cpp
+        src/auth/asio_auth_introspection_client.cpp
+        src/auth/http_response_parser.cpp
 )
 configure_chat_server_target(history_response_test)
 target_include_directories(history_response_test PRIVATE
@@ -139,6 +141,36 @@ target_link_libraries(history_response_test PRIVATE
         SQLite3::SQLite3
 )
 register_chat_server_test(history_response_test)
+
+add_executable(http_response_parser_test
+        examples/http_response_parser_test.cpp
+        src/auth/http_response_parser.cpp
+        src/protocol/chat_payload.cpp
+)
+configure_chat_server_target(http_response_parser_test)
+register_chat_server_test(http_response_parser_test)
+
+add_executable(auth_introspection_client_test
+        examples/auth_introspection_client_test.cpp
+        src/auth/asio_auth_introspection_client.cpp
+        src/auth/http_response_parser.cpp
+        src/protocol/chat_payload.cpp
+)
+configure_chat_server_target(auth_introspection_client_test)
+target_link_libraries(auth_introspection_client_test PRIVATE
+        ${CHAT_SERVER_NETWORK_LIBRARIES}
+)
+register_chat_server_test(auth_introspection_client_test)
+
+add_executable(auth_introspection_config_test
+        examples/auth_introspection_config_test.cpp
+        app/auth_introspection_config.cpp
+)
+configure_chat_server_target(auth_introspection_config_test)
+target_include_directories(auth_introspection_config_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/app
+)
+register_chat_server_test(auth_introspection_config_test)
 
 add_executable(server_runtime_config_test
         examples/server_runtime_config_test.cpp
@@ -217,6 +249,8 @@ add_executable(online_users_integration_test
         src/protocol/frame_decoder.cpp
         src/protocol/chat_payload.cpp
         src/repository/sqlite_message_repository.cpp
+        src/auth/asio_auth_introspection_client.cpp
+        src/auth/http_response_parser.cpp
 )
 configure_chat_server_target(online_users_integration_test)
 target_include_directories(online_users_integration_test PRIVATE

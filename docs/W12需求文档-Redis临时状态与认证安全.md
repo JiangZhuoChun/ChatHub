@@ -2,9 +2,9 @@
 
 > 文档状态：实施中（W12-3 B）
 > 实施状态：W12-1 已通过；W12-2 的 Redis client 边界、`login_rate_limiter.js`、`app.js` 登录调用链和 `server.js` 启动编排均已实现、验证并完成掌握确认；临时 SQLite + 真实 Redis + HTTP 最小联调已实现、通过新鲜验证并完成掌握确认。W12-1 已完成 WSL Redis CLI 的连通与 TTL 首轮人工实验、Windows Node.js `PING`、String/TTL、100 并发原子计数、`MULTI/EXEC + EXPIRE ... NX` 固定窗口变式、Redis key 类型错误、非整数 String 的 `INCR` 值格式错误与受控连接失败
-> 当前状态：**W12-3 B（Auth introspection）生产实现进行中；配置安全边界、环境变量读取、`Server` 注入、HTTP 请求文本、响应头/状态码解析、`200` JSON body 校验、公开 client 构造、三态结果回调、Session 接入、`401` body code 分类、HTTP body framing 和 Session 关闭时的 in-flight 请求取消已完成；自动化测试仍标记为后续待实现**
-> 当前授权：`app.js` 的依赖校验、`/register`、`/me` 和真实 Redis 合同测试已按用户授权代写并完成掌握确认；R12-2-12 启动依赖失败测试代码已随 `6894f34` 提交并推送，本轮掌握证据由本次文档单独提交同步。
-> 新执行顺序（2026-08-26）：从下一个能力点开始先实现生产主流程、接口合同和必要的故障语义；新增测试文件、测试夹具和集成验收统一标记为“未来待实现”，待主要功能闭环后再集中补充。已完成的 R12-2-01～12 代码、测试与证据保留不变。
+> 当前状态：**W12-3 B（Auth introspection）生产实现和本轮自动化补测已完成；配置安全边界、环境变量读取、`Server` 注入、HTTP 请求文本、响应头/状态码解析、`200` JSON body 校验、公开 client 构造、三态结果回调、Session 接入、`401` body code 分类、HTTP body framing 和 Session 关闭时的 in-flight 请求取消均有代码与测试证据；真实跨进程 Auth Service ↔ ChatServer 验收仍未完成**
+> 当前授权：`app.js` 的依赖校验、`/register`、`/me`、真实 Redis 合同测试和本轮 W12 缺失测试已按用户授权代写并完成新鲜验证；本轮没有进入 W13，也没有执行附件中的 W11 合同设计任务。
+> 执行顺序记录（2026-08-28）：先完成生产主流程，再集中补充运行期断开、配置、HTTP framing、client 状态和 Session 取消测试；已完成的测试不得以“全量 CTest 通过”掩盖其中 10 个依赖环境缺失而按合同 SKIP 的 MySQL 专项。
 > 教学约束：用户尚未系统学习 Redis。每个实现能力点必须先讲概念和 API，再由用户优先编写；只有用户明确要求“帮我实现/修改/修复”时才代写生产代码。直接代写后必须继续追问调用顺序、失败路径和关键参数，用户回答通过后才能记录为“已掌握”，代码完成不等于学习完成。
 
 ---
@@ -64,8 +64,8 @@ W12 解决两个问题：
 | 阶段 | 唯一能力点 | 交付物 | 当前状态 |
 |---|---|---|---|
 | W12-1 | Redis 最小实验 | 独立 Node.js spike、可重复测试、实验说明 | 已通过：正常、到期、并发、固定窗口、错误与连接失败证据齐全 |
-| W12-2 | 失败登录限流 | Auth Service Redis 客户端边界、限流模块、HTTP 行为与测试 | 主流程与既有证据已完成；从后续能力点开始新增测试暂缓，统一记为“未来待实现” |
-| W12-3 | `jti` 与撤销设计 | 跨 Auth Service / ChatServer 的书面方案、合同、失败语义 | B 路线已选定：配置安全边界、环境变量读取和启动注入完成；HTTP 客户端待实现 |
+| W12-2 | 失败登录限流 | Auth Service Redis 客户端边界、限流模块、HTTP 行为与测试 | 主流程、真实 Redis/SQLite/HTTP 联调、运行期断开恢复和配置回归均已通过；MySQL 专项仍按环境门禁 SKIP |
+| W12-3 | `jti` 与撤销设计 | 跨 Auth Service / ChatServer 的书面方案、合同、失败语义 | B 路线生产实现、Auth HTTP 撤销测试、C++ 配置/parser/client/Session 边界测试已完成；真实跨进程闭环仍待实现 |
 | W12-4 | 验收与交付 | 新鲜验证、README/需求/交接同步、范围审查 | 未开始 |
 
 ### 1.3 完整 W12 范围
@@ -745,7 +745,7 @@ component=auth phase=login event=rate_limited dimension=user
 - [x] 用户能独立解释启动门禁、子进程证据、端口探测和有界失败；
 - [x] 确认 R12-2-13 生产主流程：运行期 Redis 命令失败经限流模块转换为 `redis_unavailable`，HTTP 返回 503 且不越过安全门禁；
 - [x] 用户能独立解释 `error`/Promise `reject`、离线队列、有限重连、连接超时、调用链终止和 `isOpen`/`isReady`；
-- [ ] R12-2-13 运行期断开自动化/集成测试（未来待实现，主要功能闭环后集中补充）；
+- [x] R12-2-13 运行期断开自动化/集成测试：真实 Redis client `destroy()` 后 `/login` fail-closed 返回 503，不签发 token；重新创建 client 并重启临时 HTTP 入口后登录恢复；fake limiter 另覆盖 `inspect`、`recordFailure`、`clearUserFailures` 三个故障门禁；
 
 ### W12-3：JWT 撤销设计
 
@@ -793,6 +793,8 @@ component=auth phase=login event=rate_limited dimension=user
 - [x] 完成 W12-3 生产实现第 9F/9G 小步：创建具体异步 client、注入 `Session`，首个 auth 帧回到 Session strand，并将三态结果映射为接受、认证拒绝或依赖故障；主目标构建通过；`401` body code 已区分 `authentication_rejected` 与内部服务凭证故障；
 - [x] 完成 W12-3 生产实现第 9H 小步：实现 `parseContentLength()`，按 HTTP header 行解析唯一的十进制 body 字节数，拒绝缺失、重复、非法、溢出和超限值；用户已掌握字节长度合同、重复字段拒绝、`from_chars()` 完整解析和协议层/业务层职责边界；
 - [x] 完成 W12-3 生产实现第 9I 小步：在 `RequestOperation::handleRead()` 接入 `parseContentLength()`，读取过程中拒绝超长 body，实际长度达到声明值时立即完成响应；长度不足而 EOF、缺失或非法长度保持 `dependency_unavailable`；用户已掌握 `Content-Length` framing 与 EOF 的区别；主目标构建通过；
+- [x] 完成 W12-3 生产实现第 9J 小步：`introspect()` 返回可取消请求句柄，Session 保存并在关闭时取消 in-flight 请求；请求操作在自己的 strand 上取消并由 `finish()` exactly-once 清理 timer、resolver、socket；迟到结果通过 `weak_ptr` 和 Session strand 防止作用于已关闭会话；`401` body 的 JSON 解析和资源关闭边界已复核；主目标构建和空白检查通过；掌握待本次复盘确认；
+- [x] 补充 W12-3 自动化边界测试：Auth Service 真实 Redis/临时 SQLite/临时 HTTP 覆盖内部凭证、请求合同、JWT/`jti`/`exp`、撤销 TTL、重复 logout、过期/旧 token 和 Redis 故障；ChatServer CTest 覆盖 introspection 配置、HTTP status/`Content-Length`/JSON、401/503 三态、超时、取消、Session fail-closed 和迟到请求取消；
 
 ### W12-4：实现、验收与交付
 
@@ -891,9 +893,9 @@ Git 规则：
 - `clearUserFailures()` 新鲜复验：先记录同一 username/IP 两次失败，首次清理返回 `{deleted: 1}`；随后 username 为 `count: 0`、`ttl_seconds: -2`，IP 仍为 `count: 2`、TTL `60`；重复清理返回 `{deleted: 0}`；Redis 失败映射为 `redis_unavailable`，非法删除回复映射为 `redis_data_invariant`，非法 username 映射为 `login_limiter_input_invalid`；语法和探针退出码均为 `0`。
 - `app.js` 新鲜复验：`node --check src/app.js` 退出码为 `0`；使用假的 db/limiter/bcrypt/JWT 依赖启动临时 HTTP 端口，`APP_LOGIN_MATRIX_PASS` 通过。非法输入不调用任何依赖；已限流直接返回 429 和 `Retry-After`；错误凭据按 `inspect → db → bcrypt → recordFailure` 返回 401/429；成功按 `inspect → db → bcrypt → clearUserFailures → jwt.sign` 返回 200；`inspect`、`recordFailure`、`clearUserFailures` 的 Redis 错误均返回 503，清理失败不签发 token。malformed JSON 另行验证返回 400；使用项目实际 `bcryptjs` 与 `jsonwebtoken` 的成功路径验证输出 `REAL_BCRYPT_JWT_APP_PASS`；携带伪造 `X-Forwarded-For` 仍输出 `TRUSTED_SOCKET_IP_PASS`，限流输入使用底层 socket 地址。随后仅按模块/公共入口补充中文注释，`node --check`、空白检查和最小回归仍通过。该探针不代表真实 HTTP 集成已完成。
 
-- **当前能力点**：W12-3 B（Auth introspection）生产实现进行中；ChatServer 的 introspection 配置接口、URL 解析器、环境变量读取层、`Server` 配置注入、HTTP 请求安全边界、响应头/状态码解析、`200` JSON body 校验、公开 client 构造、三态结果回调、Session 接入、`401` body code 分类、`parseContentLength()` helper、`handleRead()` body framing 和 Session 关闭时取消 in-flight introspection 已创建并通过 `chat-server` 主目标构建；自动化测试标记为未来待实现；
-- **已完成项**：W12-1 的 R12-1-01～12 均有对应证据；W12-2 已确认 username/IP 双维度、key 所有者、400/401/429/503、fail-closed 和调用顺序；Redis client 生命周期已通过；`login_rate_limiter.js` 的 key、`inspect()`、`recordFailure()`、`clearUserFailures()`、错误码、输入边界、TTL 和并发证据均已通过；`app.js` 的依赖合同、登录顺序、错误映射和 malformed JSON 边界已有新鲜 HTTP 探针证据；`server.js` 的配置边界、Redis 启动门禁、监听 Promise、`require.main` 门禁、HTTP→Redis→SQLite 关闭顺序和失败后继续清理已有新鲜证据；运行期 Redis 断开时的有限重连、离线队列关闭、限流错误包装与 503 fail-closed 生产链路已完成概念确认；已有真实 Redis、临时 SQLite、临时 HTTP 端口的注册/登录/`/me` 联调测试已通过；ChatServer 的 `AuthIntrospectionConfig` 数据模型、配置错误枚举、`parseAuthIntrospectionConfig()` 主流程、`authIntrospectionConfigErrorCode()`、`loadAuthIntrospectionConfigFromEnvironment()`、`net::Server` 配置注入和 HTTP 请求安全边界已写入源文件并通过构建；
+- **当前能力点**：W12 收尾（W12-2/W12-3 B 测试补齐）；生产实现和本轮自动化测试均已完成新鲜验证，W13 尚未开始；真实跨进程 Auth Service ↔ ChatServer 闭环仍是明确待办；
+- **已完成项**：W12-1 的 R12-1-01～12 均有对应证据；W12-2 已确认 username/IP 双维度、key 所有者、400/401/429/503、fail-closed 和调用顺序；Redis client 生命周期、真实 Redis 固定窗口/并发、临时 SQLite/HTTP 注册登录/`/me`、运行期断开 503 与重启恢复、server 配置回归均已通过 Node 测试；`app.js` 的依赖合同、登录顺序、错误映射和 malformed JSON 边界已有新鲜 HTTP 证据；`server.js` 的配置边界、Redis 启动门禁、监听 Promise、`require.main` 门禁、HTTP→Redis→SQLite 关闭顺序和失败后继续清理已有新鲜证据；ChatServer 的 `AuthIntrospectionConfig` 数据模型/解析、HTTP parser/client、`Content-Length` framing、401/503 三态、超时、Session 关闭取消和在线会话回归均有 CTest 证据；
 - **错误码记录**：W12-2 所有稳定模块错误码、HTTP 业务码、底层诊断码、Express `error.type` 与内部 reason/message 的区别，已整理进唯一学习笔记的“W12-2 错误码总表”；
-- **当前未产生的证据**：R12-2-13 运行期断开的自动化/集成测试尚未补充（按新顺序标记为未来待实现）；真实跨进程验收尚未实现；现有 `history_response_test` 和 `online_users_integration_test` 因新依赖/构造函数暂不能构建；使用错误的旧构建目录 `D:\CppLearn\chathub\build` 曾得到 MariaDB package 缺失提示，但实际通过 vcpkg 配置的 `D:\CppLearn\chathub\cmake-build-debug-mysql` 已成功构建 `chat-server`。
-- **下一待办项**：补充运行期断开、取消、HTTP framing 和真实跨进程集成测试；测试继续延后，不在当前生产实现阶段新增测试文件。
-- **掌握状态**：第 9J 小步的生产代码审查已通过；完整流程讲解后的复盘回答仍待确认，代码通过不等于学习掌握完成。
+- **当前未产生的证据**：真实跨进程 Auth Service ↔ ChatServer 的共享 JWT/撤销闭环尚未实现；W12-3 6.6 中“logout 后新 TCP 认证拒绝”和“重启两个服务后撤销仍生效”尚只有分层组件证据，不能宣称端到端完成；CTest 中 10 个 MySQL 环境专项按缺少配置返回 SKIP，不计为通过。
+- **下一待办项**：W12 先保留上述跨进程闭环作为明确未完成项；待用户说“下一步”后再决定是否补跨进程验收或进入 W13，不自动扩大范围。
+- **掌握状态**：第 9J 小步的生产代码审查和复盘问题 137～142 均已通过；用户能够区分 `weak_ptr` 的生命周期保护与 `asio::post(Session strand)` 的并发串行化作用，达到本步掌握标准。

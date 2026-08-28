@@ -13,6 +13,7 @@ const {createRedisClient, connectRedis, closeRedis} = require('../src/redis_clie
 const {createLoginRateLimiter} = require('../src/login_rate_limiter');
 const {createApp} = require('../src/app');
 const {createDatabase} = require('../src/db');
+const {createJwtRevocationStore} = require('../src/jwt_revocation_store');
 const {closeHttpServer} = require('../src/server');
 
 const redisUrl = process.env.CHATHUB_REDIS_TEST_URL;
@@ -197,6 +198,10 @@ test('真实 Redis、临时 SQLite 与 HTTP 的登录限流联调', async t => {
         ipLimit: 5,
         windowSeconds: 3
     });
+    const revocationStore = createJwtRevocationStore({
+        client: redisClient,
+        key_prefix: keyPrefix
+    });
     // 保留真实 bcrypt 行为，同时记录 compare() 是否被登录路由调用。
     const observedBcrypt = {
         hash: (...args) => bcrypt.hash(...args),
@@ -210,7 +215,9 @@ test('真实 Redis、临时 SQLite 与 HTTP 的登录限流联调', async t => {
         limiter,
         bcrypt: observedBcrypt,
         jwt,
-        secretKey
+        secretKey,
+        revocation_store: revocationStore,
+        internal_service_key: `http-test-internal-${runId}`
     });
     httpServer = await listenOnLoopback(app);
     const port = httpServer.address().port;
