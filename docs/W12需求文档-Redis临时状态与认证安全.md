@@ -1,8 +1,8 @@
 # W12 需求文档：Redis 临时状态、登录限流与认证安全边界
 
-> 文档状态：实施中（W12-3 B）
+> 文档状态：W12 收尾完成（W13 尚未开始）
 > 实施状态：W12-1 已通过；W12-2 的 Redis client 边界、`login_rate_limiter.js`、`app.js` 登录调用链和 `server.js` 启动编排均已实现、验证并完成掌握确认；临时 SQLite + 真实 Redis + HTTP 最小联调已实现、通过新鲜验证并完成掌握确认。W12-1 已完成 WSL Redis CLI 的连通与 TTL 首轮人工实验、Windows Node.js `PING`、String/TTL、100 并发原子计数、`MULTI/EXEC + EXPIRE ... NX` 固定窗口变式、Redis key 类型错误、非整数 String 的 `INCR` 值格式错误与受控连接失败
-> 当前状态：**W12-3 B（Auth introspection）生产实现和本轮自动化补测已完成；配置安全边界、环境变量读取、`Server` 注入、HTTP 请求文本、响应头/状态码解析、`200` JSON body 校验、公开 client 构造、三态结果回调、Session 接入、`401` body code 分类、HTTP body framing 和 Session 关闭时的 in-flight 请求取消均有代码与测试证据；真实跨进程 Auth Service ↔ ChatServer 验收仍未完成**
+> 当前状态：**W12-4 已完成：真实 Auth Service ↔ ChatServer 跨进程 JWT 撤销闭环已通过独立 E2E；配置安全边界、环境变量读取、`Server` 注入、HTTP 请求文本、响应头/状态码解析、`200` JSON body 校验、公开 client 构造、三态结果回调、Session 接入、`401` body code 分类、HTTP body framing、Session 关闭时的 in-flight 请求取消和重启后撤销持久性均有代码与测试证据。新增测试代码的三个隔离/生命周期问题已记录，用户掌握待本次复盘确认**
 > 当前授权：`app.js` 的依赖校验、`/register`、`/me`、真实 Redis 合同测试和本轮 W12 缺失测试已按用户授权代写并完成新鲜验证；本轮没有进入 W13，也没有执行附件中的 W11 合同设计任务。
 > 执行顺序记录（2026-08-28）：先完成生产主流程，再集中补充运行期断开、配置、HTTP framing、client 状态和 Session 取消测试；已完成的测试不得以“全量 CTest 通过”掩盖其中 10 个依赖环境缺失而按合同 SKIP 的 MySQL 专项。
 > 教学约束：用户尚未系统学习 Redis。每个实现能力点必须先讲概念和 API，再由用户优先编写；只有用户明确要求“帮我实现/修改/修复”时才代写生产代码。直接代写后必须继续追问调用顺序、失败路径和关键参数，用户回答通过后才能记录为“已掌握”，代码完成不等于学习完成。
@@ -65,8 +65,8 @@ W12 解决两个问题：
 |---|---|---|---|
 | W12-1 | Redis 最小实验 | 独立 Node.js spike、可重复测试、实验说明 | 已通过：正常、到期、并发、固定窗口、错误与连接失败证据齐全 |
 | W12-2 | 失败登录限流 | Auth Service Redis 客户端边界、限流模块、HTTP 行为与测试 | 主流程、真实 Redis/SQLite/HTTP 联调、运行期断开恢复和配置回归均已通过；MySQL 专项仍按环境门禁 SKIP |
-| W12-3 | `jti` 与撤销设计 | 跨 Auth Service / ChatServer 的书面方案、合同、失败语义 | B 路线生产实现、Auth HTTP 撤销测试、C++ 配置/parser/client/Session 边界测试已完成；真实跨进程闭环仍待实现 |
-| W12-4 | 验收与交付 | 新鲜验证、README/需求/交接同步、范围审查 | 未开始 |
+| W12-3 | `jti` 与撤销设计 | 跨 Auth Service / ChatServer 的书面方案、合同、失败语义 | B 路线生产实现、Auth HTTP 撤销测试、C++ 配置/parser/client/Session 边界测试已完成；真实跨进程闭环已有 E2E 证据 |
+| W12-4 | 验收与交付 | 新鲜验证、README/需求/交接同步、范围审查 | 已完成：真实跨进程撤销闭环、重复运行、文档和范围验证均已完成 |
 
 ### 1.3 完整 W12 范围
 
@@ -576,7 +576,7 @@ W12 已选择 B（Auth introspection）路线，`jti`/TTL/消费者/故障语义
 
 上述设计门禁关闭后，生产实现按“Auth Service → ChatServer 配置 → HTTP 客户端 → Session 集成”的顺序推进。
 
-### 6.6 撤销闭环最低验收（仅在后续获授权时适用）
+### 6.6 撤销闭环最低验收（已按授权执行）
 
 1. 新 token 含唯一 `jti` 和有效 `exp`；
 2. logout 前，`/me` 与新的 ChatServer TCP 认证都成功；
@@ -586,6 +586,8 @@ W12 已选择 B（Auth introspection）路线，`jti`/TTL/消费者/故障语义
 6. Redis/Introspection 故障时不把 token 当作未撤销；
 7. 旧 token 兼容策略有明确测试；
 8. 已建立的 TCP Session 是否断开与设计一致，不得默认为已解决。
+
+本轮 `auth-service/test/cross_process_revocation.e2e.js` 已在真实 Auth Service、真实 ChatServer、真实 Redis 和真实 TCP/HTTP 之间执行上述闭环：新 token 在 logout 前可通过 `/me` 和新的 TCP auth；logout 后 `/me` 返回 `401 authentication_rejected`，新的 TCP auth 收到 `authentication_rejected` 并关闭；撤销 marker 的 TTL 不超过 token 剩余寿命；停止并重启两个服务后，Redis 中的 marker 仍使 `/me` 和新的 TCP auth 拒绝；已经建立的旧 TCP Session 仍可完成 ping/pong。Redis/HTTP 故障的 fail-closed 语义由既有分层测试覆盖。
 
 ---
 
@@ -634,6 +636,20 @@ npm test
 - W12-2 若未改 C++/Qt，Node 自动化与双账户人工 HTTP 验收是主要证据；
 - 如果实际改动触及 Qt HTTP 展示、ChatServer JWT 或公共协议，则必须升级范围并增加对应新鲜构建/CTest/人工验收，不能沿用旧结果；
 - 完整 W12 交付前必须重新检查当前 Git diff，不能借用 W11 的历史构建和测试作为 W12 证据。
+
+### 7.4 W12-4 真实跨进程撤销验收
+
+```powershell
+Set-Location D:\CppLearn\chathub\auth-service
+$env:CHATHUB_REDIS_TEST_URL = '<仅当前终端的专用测试 URL>'
+npm run test:e2e
+```
+
+- 测试独立启动 Auth Service 和 ChatServer 子进程；Auth Service 固定使用生产端口 `3000`，因此不与普通 `npm test` 并行运行；
+- Auth Service 使用临时工作目录隔离相对路径 `auto.db`，ChatServer 使用临时 SQLite 路径；
+- 每次运行生成唯一 Redis key prefix、用户名、签名密钥和内部服务密钥，结束时只删除本次撤销 key，不使用 `FLUSHDB`；
+- ChatServer 可执行文件默认取 `D:\CppLearn\chathub\cmake-build-debug-mysql\chat-server\chat-server.exe`，也可通过 `CHATHUB_CHAT_SERVER_EXECUTABLE` 显式指定；
+- 子进程启动、端口开放/关闭、TCP 帧读取、HTTP 请求和资源清理均有 timeout/deadline；缺失 Redis URL 或可执行文件时明确失败，不输出假 PASS。
 
 ---
 
@@ -798,11 +814,11 @@ component=auth phase=login event=rate_limited dimension=user
 
 ### W12-4：实现、验收与交付
 
-- [ ] 只实施已确认的撤销范围；
-- [ ] 真实跨进程端到端验证；
-- [ ] 更新 README、需求、协议/架构（如实际改变）、交接；
-- [ ] 范围审查、秘密扫描和新鲜验证；
-- [ ] 只有用户明确授权后才提交/推送。
+- [x] 只实施已确认的撤销范围；
+- [x] 真实跨进程端到端验证；
+- [x] 更新 README、需求、协议/架构（如实际改变）、交接；
+- [x] 范围审查、秘密扫描和新鲜验证；
+- [x] 只有用户明确授权后才提交/推送。
 
 ---
 
@@ -893,11 +909,12 @@ Git 规则：
 - `clearUserFailures()` 新鲜复验：先记录同一 username/IP 两次失败，首次清理返回 `{deleted: 1}`；随后 username 为 `count: 0`、`ttl_seconds: -2`，IP 仍为 `count: 2`、TTL `60`；重复清理返回 `{deleted: 0}`；Redis 失败映射为 `redis_unavailable`，非法删除回复映射为 `redis_data_invariant`，非法 username 映射为 `login_limiter_input_invalid`；语法和探针退出码均为 `0`。
 - `app.js` 新鲜复验：`node --check src/app.js` 退出码为 `0`；使用假的 db/limiter/bcrypt/JWT 依赖启动临时 HTTP 端口，`APP_LOGIN_MATRIX_PASS` 通过。非法输入不调用任何依赖；已限流直接返回 429 和 `Retry-After`；错误凭据按 `inspect → db → bcrypt → recordFailure` 返回 401/429；成功按 `inspect → db → bcrypt → clearUserFailures → jwt.sign` 返回 200；`inspect`、`recordFailure`、`clearUserFailures` 的 Redis 错误均返回 503，清理失败不签发 token。malformed JSON 另行验证返回 400；使用项目实际 `bcryptjs` 与 `jsonwebtoken` 的成功路径验证输出 `REAL_BCRYPT_JWT_APP_PASS`；携带伪造 `X-Forwarded-For` 仍输出 `TRUSTED_SOCKET_IP_PASS`，限流输入使用底层 socket 地址。随后仅按模块/公共入口补充中文注释，`node --check`、空白检查和最小回归仍通过。该探针不代表真实 HTTP 集成已完成。
 
-- **当前能力点**：W12 收尾（W12-2/W12-3 B 测试补齐）；生产实现和本轮自动化测试均已完成新鲜验证，W13 尚未开始；真实跨进程 Auth Service ↔ ChatServer 闭环仍是明确待办；
+- **当前能力点**：W12 收尾（W12-2/W12-3 B 测试补齐与 W12-4 跨进程验收）；生产实现和本轮自动化测试均已完成新鲜验证，W13 尚未开始；新增 E2E 的三个概念问题已记录，学习掌握待复盘确认；
 - **已完成项**：W12-1 的 R12-1-01～12 均有对应证据；W12-2 已确认 username/IP 双维度、key 所有者、400/401/429/503、fail-closed 和调用顺序；Redis client 生命周期、真实 Redis 固定窗口/并发、临时 SQLite/HTTP 注册登录/`/me`、运行期断开 503 与重启恢复、server 配置回归均已通过 Node 测试；`app.js` 的依赖合同、登录顺序、错误映射和 malformed JSON 边界已有新鲜 HTTP 证据；`server.js` 的配置边界、Redis 启动门禁、监听 Promise、`require.main` 门禁、HTTP→Redis→SQLite 关闭顺序和失败后继续清理已有新鲜证据；ChatServer 的 `AuthIntrospectionConfig` 数据模型/解析、HTTP parser/client、`Content-Length` framing、401/503 三态、超时、Session 关闭取消和在线会话回归均有 CTest 证据；
 - **错误码记录**：W12-2 所有稳定模块错误码、HTTP 业务码、底层诊断码、Express `error.type` 与内部 reason/message 的区别，已整理进唯一学习笔记的“W12-2 错误码总表”；
-- **当前未产生的证据**：真实跨进程 Auth Service ↔ ChatServer 的共享 JWT/撤销闭环尚未实现；W12-3 6.6 中“logout 后新 TCP 认证拒绝”和“重启两个服务后撤销仍生效”尚只有分层组件证据，不能宣称端到端完成；CTest 中 10 个 MySQL 环境专项按缺少配置返回 SKIP，不计为通过。
-- **下一待办项**：W12 先保留上述跨进程闭环作为明确未完成项；待用户说“下一步”后再决定是否补跨进程验收或进入 W13，不自动扩大范围。
+- **跨进程闭环证据**：真实 Auth Service ↔ ChatServer E2E 已验证注册、登录、TCP auth、logout、Redis marker TTL、`/me` 拒绝、新连接拒绝、旧连接保持和两个服务重启后的撤销持久性；
+- **当前未产生的证据**：没有新的 W12 生产合同缺口；CTest 中 10 个 MySQL 环境专项按缺少配置返回 SKIP，不计为通过；W12 仍未进入 Docker Compose、CI 或其他 W13 范围。
+- **下一待办项**：先由用户复盘并解释本轮三个测试设计问题（真实进程、旧/新连接语义、临时目录与唯一 Redis prefix）；掌握确认后再进入 W13，不自动扩大范围。
 - **掌握状态**：第 9J 小步的生产代码审查和复盘问题 137～142 均已通过；用户能够区分 `weak_ptr` 的生命周期保护与 `asio::post(Session strand)` 的并发串行化作用，达到本步掌握标准。
 
 ### W12 收尾补充：测试规范复核（2026-08-28）
@@ -909,3 +926,17 @@ Git 规则：
 - Redis、HTTP、并发和子进程测试均有测试级 timeout 或内部 deadline；TTL 到期仍使用有界轮询，不使用固定时刻断言；
 - 每个测试仍按 Arrange → Act → Assert 组织，并同时检查成功结果、重要副作用和“不应发生”的调用/签发/监听；临时数据库、Redis key、HTTP server 和子进程均在测试生命周期结束时清理；
 - 本轮只调整测试组织与可观测性，没有降低既有业务断言，也没有修改生产业务合同。Node 测试 12/12 通过；完整 CTest 13 个通过、10 个 MySQL 环境专项明确 SKIP、0 个失败。
+
+### W12 收尾补充：真实跨进程撤销闭环（2026-08-28）
+
+本轮按用户授权新增 `auth-service/test/cross_process_revocation.e2e.js` 和 `npm run test:e2e`，没有修改 Auth Service、ChatServer 或公共协议的生产实现。测试启动真实 Auth Service 与真实 ChatServer 子进程，使用真实 Redis、真实 HTTP、真实 TCP 帧和真实 JWT 完成以下顺序：注册与登录取得含 `jti`/`exp` 的 token → 新 TCP 认证成功 → logout 写入带剩余寿命的撤销 marker → `/me` 返回 `401 authentication_rejected` → 新 TCP auth 返回 `authentication_rejected` 并关闭 → 已建立的旧 TCP Session 仍可 ping/pong → 停止并重启 Auth Service 与 ChatServer → `/me` 和新的 TCP auth 仍拒绝同一 token。
+
+隔离设计：Auth Service 的工作目录使用临时目录，避免相对路径 `auto.db` 污染开发数据库；ChatServer 使用独立临时 SQLite 路径；每次运行生成唯一 Redis key prefix、用户名、签名密钥和内部服务密钥，清理时只删除本次 marker，不使用 `FLUSHDB`。生命周期设计：固定 Auth 端口 `3000` 的 E2E 单独通过 `npm run test:e2e` 运行，避免和普通 Node 测试并行争用端口；子进程、端口、HTTP、TCP 帧和清理均设置 timeout/deadline。
+
+新鲜验证：在显式提供专用 `CHATHUB_REDIS_TEST_URL` 的环境下，`npm run test:e2e` 连续两次均为 1/1 通过；普通 `npm test` 为 12/12 通过；C++ 全量构建无待构建项；CTest 为 23 个注册测试中 13 个通过、10 个 MySQL 环境专项明确 SKIP、0 个失败。SKIP 不计为通过，测试不输出密钥、JWT 或 Redis URL 的实际值。
+
+本轮复盘问题（待用户口述确认）：
+
+146. 为什么必须启动真实 Auth Service 和真实 ChatServer 子进程，而不能只用假 HTTP/TCP client？
+147. 为什么 logout 后新的 TCP 认证必须拒绝，但已经建立的旧 TCP Session 仍可保持 ping/pong？
+148. 为什么 E2E 必须使用临时目录和每次唯一的 Redis key prefix，而不能直接使用开发 `auto.db` 或固定 key？

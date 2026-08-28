@@ -8,7 +8,8 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:e2e": "node --test test/cross_process_revocation.e2e.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

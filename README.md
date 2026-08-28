@@ -1,20 +1,23 @@
 # ChatHub
 
 ChatHub 是一个 Windows 本地开发的单机聊天项目：Qt 客户端通过 HTTP 登录取得 JWT，再通过 TCP 与 ChatServer 聊天；ChatServer
-通过统一的 `IMessageRepository` 使用 SQLite 或 MySQL 持久化消息，并提供认证后的历史首屏。SQLite 是默认后端，MySQL 需要在启动时显式选择。
+通过 Auth Service introspection 完成 TCP 新连接认证，并通过统一的 `IMessageRepository` 使用 SQLite 或 MySQL 持久化消息。
+Redis 只保存登录限流和 JWT 撤销 marker 等带 TTL 的认证临时状态；SQLite 是默认消息后端，MySQL 需要在启动时显式选择。
 
 本 README
 只记录已实现且有验证证据的行为。需求、协议细节和故障复现分别见 [W10 需求](docs/W10需求文档-交付稳定性.md)、
-[W11 MySQL 需求](docs/W11需求文档-MySQL集成与存储抽象.md)、[协议总图](docs/ChatHub协议字段与状态流向总图.md) 和
-[W10 故障记录](docs/故障记录/W10-交付稳定性故障记录.md)。
+[W11 MySQL 需求](docs/W11需求文档-MySQL集成与存储抽象.md)、[W12 Redis/认证需求](docs/W12需求文档-Redis临时状态与认证安全.md)、
+[协议总图](docs/ChatHub协议字段与状态流向总图.md) 和 [W10 故障记录](docs/故障记录/W10-交付稳定性故障记录.md)。
 
 ## 1. 单机架构与数据所有权
 
 ```mermaid
 flowchart LR
     U["用户"] --> Q["Qt Client\n登录、TCP 编解码、历史聚合\n不直接访问数据库"]
-    Q -->|"HTTP :3000"| A["Auth Service\n账号、密码哈希、JWT 签发\nauto.db"]
+    Q -->|"HTTP :3000"| A["Auth Service\n账号、密码哈希、JWT 签发/撤销\nauto.db"]
+    A --> RDS["Redis\n登录限流、JWT 撤销 marker\nTTL 临时状态"]
     Q -->|"TCP :9000"| S["ChatServer\n认证、在线映射、路由、历史分块"]
+    S -->|"HTTP introspection"| A
     S --> R["IMessageRepository\n统一业务合同"]
     R --> SQ["SQLite\n默认后端\n本地数据库文件"]
     R --> MY["MySQL\n显式选择\n远程或本机实例"]
@@ -23,8 +26,8 @@ flowchart LR
 | 组件                  | 拥有的状态                                     | 不负责的事                 |
 |---------------------|-------------------------------------------|-----------------------|
 | Qt Client           | 登录态、TCP 连接、在线快照缓存、`m_conversations` UI 模型 | 不直接操作数据库或伪造发送者身份 |
-| Auth Service        | 用户账号、bcrypt 密码哈希、JWT 签发                   | 不维护在线状态、消息路由或聊天历史     |
-| ChatServer          | TCP Session、认证用户名映射、待送达索引、消息路由            | 不信任客户端正文中的发送者身份       |
+| Auth Service        | 用户账号、bcrypt 密码哈希、JWT 签发、Redis 登录限流与撤销 marker                   | 不维护在线状态、消息路由或聊天历史     |
+| ChatServer          | TCP Session、通过 Auth introspection 得到的认证用户名、待送达索引、消息路由            | 不直接读取 Redis，不信任客户端正文中的发送者身份       |
 | `IMessageRepository` | ChatServer 的消息持久化业务接口；由 SQLite 或 MySQL 后端实现 | 不操作 UI/TCP Socket，不向上层暴露 SQL 或数据库句柄 |
 
 `local_id` 由发送客户端生成，用于重试和更新既有气泡；`message_id` 由 ChatServer 首次成功入库时生成，用于持久身份、历史去重和送达回执；
@@ -35,10 +38,10 @@ flowchart LR
 - 单机、单 ChatServer；不支持多服务器路由。
 - `online_users` 是完整快照，最多 88 个、每个 3–20B 的 ASCII 用户名；不分页、不分块。
 - 单条聊天正文最多 1024B，所有协议帧正文最多 2048B。
-- 无离线推送、多端同步、群聊、好友关系或 Redis；消息存储支持默认 SQLite 和显式选择的 MySQL，两种后端保持相同业务合同。
+- 无离线推送、多端同步、群聊或好友关系；Redis 仅用于登录限流和受控 JWT 撤销，不保存聊天正文或用户密码；消息存储支持默认 SQLite 和显式选择的 MySQL，两种后端保持相同业务合同。
 - `PendingDeliveryMap` 只存在于 Server 进程内；重启后历史中的本人消息最多恢复为 `Accepted`，不会伪造为 `Delivered`。
-- 当前 ChatServer 的 JWT 验证器仍是开发期配置，未提供外部密钥参数；Auth Service 的私有 `.env` 必须与其匹配。不要把密钥、JWT
-  或数据库内容写入 README、Git、日志或测试夹具。
+- ChatServer 的新 TCP auth 通过 `CHATHUB_AUTH_INTROSPECTION_URL` 和内部服务密钥调用 Auth Service；Auth Service 再验证 JWT 并查询 Redis
+  撤销 marker。不要把内部密钥、签名密钥、JWT 或数据库内容写入 README、Git、日志或测试夹具。
 - 启动日志会输出实际数据库路径与认证超时；会话错误日志已统一为带 `session_id`、`phase`、`event`、`code` 的结构化记录，并且不回显入站
   `error` 正文。
 
@@ -50,14 +53,16 @@ flowchart LR
 - Qt 6.11.1（Core、Gui、Widgets、Network）；
 - standalone Asio、Boost.JSON、OpenSSL、SQLite3、jwt-cpp；
 - vcpkg manifest 与 MariaDB Connector/C（`libmariadb >= 3.4.8`）；当前 MinGW 构建使用 `x64-mingw-dynamic` triplet；
-- Node.js 与 npm（Auth Service）。
+- Node.js 与 npm（Auth Service）；
+- Redis 8.x 或兼容 `SET`/`EXPIRE`/`EXISTS`/`INCR` 的本机实例（当前开发环境通过 WSL 提供）。
 
 项目根目录的 `vcpkg.json` 声明 `libmariadb`。CMake 必须使用与 Qt MinGW 13.1 匹配的 vcpkg toolchain 和
 `x64-mingw-dynamic` triplet，不能把 MSVC 的 `x64-windows` 库与 MinGW 目标混用。构建 `chat-server` 后，CMake 会把
 `libmariadb` 所需的认证插件复制到可执行文件旁的 `plugins/libmariadb` 目录。
 
-Auth Service 首次使用时在 `auth-service` 目录运行 `npm install`。它从私有 `.env` 读取 `SECRET_KEY`；该文件和 `auto.db`
-都是本机数据，不提交。当前工作站的私有配置已验证与 ChatServer 开发验证器一致，但 README 不记录其值。
+Auth Service 首次使用时在 `auth-service` 目录运行 `npm install`。它从私有 `.env` 读取 `CHATHUB_REDIS_URL`、`SECRET_KEY` 和
+`CHATHUB_AUTH_INTERNAL_SERVICE_KEY`；可选的 `CHATHUB_REDIS_KEY_PREFIX`、`CHATHUB_LOGIN_USER_LIMIT`、`CHATHUB_LOGIN_IP_LIMIT`、
+`CHATHUB_LOGIN_WINDOW_SECONDS` 用于认证临时状态配置。`.env` 和 `auto.db` 都是本机数据，不提交；README 不记录任何实际密钥。
 
 ## 4. 构建与自动化验证
 
@@ -87,6 +92,20 @@ node --check src/server.js
 node --check src/db.js
 ```
 
+Auth Service 的测试分为普通模块/HTTP 测试和真实跨进程撤销 E2E。两者都必须显式提供专用 Redis 地址；E2E 固定使用 Auth
+Service 的生产端口 `3000`，不要和其他启动 Auth Service 的命令并行运行：
+
+```powershell
+Set-Location D:\CppLearn\chathub\auth-service
+$env:CHATHUB_REDIS_TEST_URL = '<仅当前终端的专用测试 URL>'
+npm test
+npm run test:e2e
+```
+
+`npm run test:e2e` 默认使用 `D:\CppLearn\chathub\cmake-build-debug-mysql\chat-server\chat-server.exe`；如需使用其他构建产物，
+可在当前终端设置 `CHATHUB_CHAT_SERVER_EXECUTABLE`。测试为 Auth Service 和 ChatServer 各自创建临时工作目录/数据库，并为每次运行
+生成唯一 Redis key prefix，结束时清理本次资源。
+
 提交前再执行：
 
 ```powershell
@@ -97,19 +116,24 @@ git diff --check
 
 ## 5. 启动与关闭顺序
 
-1. 启动 Auth Service：
+1. 确认 Redis 已运行，然后启动 Auth Service：
 
    ```powershell
    Set-Location D:\CppLearn\chathub\auth-service
+   $env:CHATHUB_REDIS_URL = 'redis://127.0.0.1:6379'
+   $env:SECRET_KEY = '<仅当前终端的本地签名密钥>'
+   $env:CHATHUB_AUTH_INTERNAL_SERVICE_KEY = '<仅当前终端的内部服务密钥>'
    npm start
    ```
 
-   它监听本机 `3000` 端口，并在当前目录创建或打开 `auto.db`。
+   它监听本机 `3000` 端口，并在当前目录创建或打开 `auto.db`；启动前会先连接 Redis，依赖失败时不监听 HTTP。
 
 2. 启动 ChatServer。未指定后端时默认使用 SQLite。先创建只用于本地运行的数据库目录：
 
    ```powershell
    Set-Location D:\CppLearn\chathub
+   $env:CHATHUB_AUTH_INTROSPECTION_URL = 'http://127.0.0.1:3000/internal/auth/introspect'
+   $env:CHATHUB_AUTH_INTERNAL_SERVICE_KEY = '<与 Auth Service 相同的本地内部服务密钥>'
    New-Item -ItemType Directory -Force .\run-data
    .\cmake-build-debug-mysql\chat-server\chat-server.exe --port 9000 --database-path .\run-data\chathub.db --auth-timeout-ms 5000
    ```
