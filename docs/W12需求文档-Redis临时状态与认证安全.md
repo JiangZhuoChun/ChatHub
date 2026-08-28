@@ -698,7 +698,7 @@ component=auth phase=login event=rate_limited dimension=user
 - [x] 读取工程协作总章程和学习教练提示词；
 - [x] 核对 W11 交接、当前路线、Auth Service 和机器环境；
 - [x] 形成本文；
-- [ ] 用户确认 W12 范围、完成口径和撤销门禁。
+- [x] 用户确认 W12 范围、完成口径和撤销门禁。
 
 完成本文不自动进入 W12-1。
 
@@ -743,10 +743,10 @@ component=auth phase=login event=rate_limited dimension=user
 - [x] 讲清真实 HTTP 阈值、`Retry-After` 与“观察型 bcrypt 包装器”的合同；
 - [x] 代写并验证 R12-2-01～03：连续失败 401/429、受限正确密码 429、bcrypt 不再调用；
 - [x] 用户能独立解释阈值次与已受限次的调用差异、真实 bcrypt 包装器与 Redis 最终状态；
-- [ ] 讲清 username key 所有权、共享 source IP key 与 user A/user B 的真实 HTTP 数据流；
+- [x] 讲清 username key 所有权、共享 source IP key 与 user A/user B 的真实 HTTP 数据流；
 - [x] 代写并验证 R12-2-07：user A 达到 username 阈值时，user B 在同 IP 未达阈值下仍可 200 登录，且 A 仍受限；
 - [x] 用户能独立解释 A/B username key、共享 IP key、成功清理边界和再次 429 证据；
-- [ ] 讲清共享 source IP key 达到阈值后的跨用户名短路数据流；
+- [x] 讲清共享 source IP key 达到阈值后的跨用户名短路数据流；
 - [x] 代写并验证 R12-2-08：同 IP 使 IP count 达到 5 后，新 username 即使无失败历史也返回 429，且不调用 bcrypt；
 - [x] 用户能独立解释 B 失败如何触发共享 IP 阈值、C 为何在 username 空时仍 429；
 - [x] 代写并验证 R12-2-04：username/IP key TTL 到期后正确密码恢复 200，并重新进入 bcrypt/JWT 成功路径；
