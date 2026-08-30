@@ -14,7 +14,8 @@
     "test:ten-client": "node --test test/ten_client_ring.e2e.js",
     "test:twenty-client": "node --test test/twenty_client_ring.e2e.js",
     "test:authenticated-disconnect": "node --test test/authenticated_disconnect.e2e.js",
-    "test:mysql-write-failure": "node --test test/mysql_write_failure.e2e.js"
+    "test:mysql-write-failure": "node --test test/mysql_write_failure.e2e.js",
+    "test:auth-dependency-failure": "node --test test/auth_dependency_failure.e2e.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
