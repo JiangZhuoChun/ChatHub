@@ -1,12 +1,37 @@
 #include "net/session.h"
+#include "protocol/chat_payload.h"
 
 #include <boost/json.hpp>
+
 #include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <sstream>
+#include <ctime>
 
-#include "protocol/chat_payload.h"
+
+namespace {
+std::string formatUtcTimestamp(const std::chrono::system_clock::time_point time_point) {
+  const std::time_t time = std::chrono::system_clock::to_time_t(time_point);
+  std::tm utc_time{};
+  if (gmtime_s(&utc_time,&time) != 0) {
+      return "unavailable";
+  }
+
+  const auto milliseconds =
+    std::chrono::duration_cast<std::chrono::milliseconds>(time_point.time_since_epoch()) % 1000;
+
+  std::ostringstream stream;
+  stream << std::put_time(&utc_time, "%Y-%m-%dT%H:%M:%S")
+        << "."
+        << std::setw(3)
+        << std::setfill('0')
+        << milliseconds.count()
+        << "Z";
+  return stream.str();
+}
+}
 
 namespace net {
 
@@ -507,9 +532,10 @@ void Session::handlerMessage(const protocol::Message &message) {
       break;
     case protocol::MessageType::pong:
       break;
-    case protocol::MessageType::error:
+    case protocol::MessageType::error: {
       log("dispatch", "peer_error_ignored", "inbound_error");
       break;
+    }
     case protocol::MessageType::auth:
       break;
     case protocol::MessageType::chat_ack:
@@ -645,7 +671,11 @@ void Session::log(std::string_view phase, std::string_view event,
                   std::optional<std::size_t> limit) const {
   // 1.先在局部变量中拼完整条日志
   std::ostringstream oss;
-  oss << "session_id=" << m_id << " phase=" << phase << " event=" << event
+  oss << "timestamp=" << formatUtcTimestamp(std::chrono::system_clock::now())
+      << " session_id=" << m_id
+      << " component=chat_server"
+      << " phase=" << phase
+      << " event=" << event
       << " code=" << code;
   // 2. optional 有值时才输出
   if (actual.has_value()) {
