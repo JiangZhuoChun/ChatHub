@@ -3,6 +3,19 @@ cmake_minimum_required(VERSION 3.19)
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network)
 qt_standard_project_setup(REQUIRES 6.8)
 
+# Qt 客户端的公共依赖只定义一次；应用和测试通过 helper 复用它。
+add_library(chathub_qt_client_options INTERFACE)
+target_include_directories(chathub_qt_client_options INTERFACE
+        "${CMAKE_SOURCE_DIR}/chat-server/include"
+)
+target_link_libraries(chathub_qt_client_options INTERFACE
+        Qt::Core
+        Qt6::Network
+)
+
+function(configure_qt_client_target target_name)
+    target_link_libraries(${target_name} PRIVATE chathub_qt_client_options)
+endfunction()
 
 qt_add_executable(client-qt
         WIN32 MACOSX_BUNDLE
@@ -19,16 +32,11 @@ qt_add_executable(client-qt
         chatclient.h
         chat_types.h
 )
-
-target_include_directories(client-qt PRIVATE
-        ${CMAKE_SOURCE_DIR}/chat-server/include
-)
+configure_qt_client_target(client-qt)
 
 target_link_libraries(client-qt
         PRIVATE
-        Qt::Core
         Qt::Widgets
-        Qt6::Network
 )
 
 install(TARGETS client-qt
@@ -44,44 +52,5 @@ qt_generate_deploy_app_script(
 )
 install(SCRIPT ${deploy_script})
 
-# C1：以本地 TCP 对端验证认证后的历史首屏请求与分块接收。
-qt_add_executable(history_client_test
-        tests/history_client_test.cpp
-        chatclient.cpp
-        chatclient.h
-        chat_types.h
-)
-
-target_include_directories(history_client_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/chat-server/include
-)
-
-target_link_libraries(history_client_test PRIVATE
-        Qt::Core
-        Qt6::Network
-)
-
-add_test(NAME history_client_test COMMAND history_client_test)
-
-# C2.2：验证历史页与实时消息合并、以及本地消息确认后的实际会话显示顺序。
-qt_add_executable(conversation_order_test
-        tests/conversation_order_test.cpp
-        mainwindow.cpp
-        mainwindow.h
-        mainwindow.ui
-        chatclient.cpp
-        chatclient.h
-        chat_types.h
-)
-
-target_include_directories(conversation_order_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/chat-server/include
-)
-
-target_link_libraries(conversation_order_test PRIVATE
-        Qt::Core
-        Qt::Widgets
-        Qt6::Network
-)
-
-add_test(NAME conversation_order_test COMMAND conversation_order_test)
+# 测试和应用配置分离：在查看客户端入口时，不需要浏览 CTest 细节。
+add_subdirectory(tests)

@@ -1,6 +1,7 @@
 # 构建产物
 build/
 cmake-build-*/
+out/
 *.exe
 *.dll
 *.obj
@@ -11,6 +12,7 @@ cmake-build-*/
 .vscode/
 .qtcreator/
 CMakeLists.txt.user
+CMakeUserPresets.json
 
 # Node.js
 node_modules/

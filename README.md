@@ -6,7 +6,7 @@ Redis 只保存登录限流和 JWT 撤销 marker 等带 TTL 的认证临时状�
 
 本 README
 只记录已实现且有验证证据的行为。需求、协议细节和故障复现分别见 [W10 需求](docs/W10需求文档-交付稳定性.md)、
-[W11 MySQL 需求](docs/W11需求文档-MySQL集成与存储抽象.md)、[W12 Redis/认证需求](docs/W12需求文档-Redis临时状态与认证安全.md)、
+[W11 MySQL 需求](docs/W11需求文档-MySQL集成与存储抽象.md)、[W12 Redis/认证需求](docs/W12需求文档-Redis临时状态与认证安全.md)、[W13 工程交付需求](docs/W13需求文档-工程交付与可重复验证.md)、
 [协议总图](docs/ChatHub协议字段与状态流向总图.md) 和 [W10 故障记录](docs/故障记录/W10-交付稳定性故障记录.md)。
 
 ## 1. 单机架构与数据所有权
@@ -23,12 +23,12 @@ flowchart LR
     R --> MY["MySQL\n显式选择\n远程或本机实例"]
 ```
 
-| 组件                  | 拥有的状态                                     | 不负责的事                 |
-|---------------------|-------------------------------------------|-----------------------|
-| Qt Client           | 登录态、TCP 连接、在线快照缓存、`m_conversations` UI 模型 | 不直接操作数据库或伪造发送者身份 |
-| Auth Service        | 用户账号、bcrypt 密码哈希、JWT 签发、Redis 登录限流与撤销 marker                   | 不维护在线状态、消息路由或聊天历史     |
-| ChatServer          | TCP Session、通过 Auth introspection 得到的认证用户名、待送达索引、消息路由            | 不直接读取 Redis，不信任客户端正文中的发送者身份       |
-| `IMessageRepository` | ChatServer 的消息持久化业务接口；由 SQLite 或 MySQL 后端实现 | 不操作 UI/TCP Socket，不向上层暴露 SQL 或数据库句柄 |
+| 组件                   | 拥有的状态                                                 | 不负责的事                               |
+|----------------------|-------------------------------------------------------|-------------------------------------|
+| Qt Client            | 登录态、TCP 连接、在线快照缓存、`m_conversations` UI 模型             | 不直接操作数据库或伪造发送者身份                    |
+| Auth Service         | 用户账号、bcrypt 密码哈希、JWT 签发、Redis 登录限流与撤销 marker          | 不维护在线状态、消息路由或聊天历史                   |
+| ChatServer           | TCP Session、通过 Auth introspection 得到的认证用户名、待送达索引、消息路由 | 不直接读取 Redis，不信任客户端正文中的发送者身份         |
+| `IMessageRepository` | ChatServer 的消息持久化业务接口；由 SQLite 或 MySQL 后端实现           | 不操作 UI/TCP Socket，不向上层暴露 SQL 或数据库句柄 |
 
 `local_id` 由发送客户端生成，用于重试和更新既有气泡；`message_id` 由 ChatServer 首次成功入库时生成，用于持久身份、历史去重和送达回执；
 `request_id` 只关联一轮历史查询。三者不能互换。
@@ -54,7 +54,7 @@ flowchart LR
 - standalone Asio、Boost.JSON、OpenSSL、SQLite3、jwt-cpp；
 - vcpkg manifest 与 MariaDB Connector/C（`libmariadb >= 3.4.8`）；当前 MinGW 构建使用 `x64-mingw-dynamic` triplet；
 - Node.js 与 npm（Auth Service）；
-- Redis 8.x 或兼容 `SET`/`EXPIRE`/`EXISTS`/`INCR` 的本机实例（当前开发环境通过 WSL 提供）。
+- Docker Desktop 与 Docker Compose（运行 `mysql:8.4.11` 和 `redis:8.2.9-alpine` 基础设施依赖）。
 
 项目根目录的 `vcpkg.json` 声明 `libmariadb`。CMake 必须使用与 Qt MinGW 13.1 匹配的 vcpkg toolchain 和
 `x64-mingw-dynamic` triplet，不能把 MSVC 的 `x64-windows` 库与 MinGW 目标混用。构建 `chat-server` 后，CMake 会把
@@ -75,7 +75,7 @@ cmake -S D:\CppLearn\chathub `
   -DCMAKE_CXX_COMPILER=D:\QT\Tools\mingw1310_64\bin\c++.exe `
   -DCMAKE_MAKE_PROGRAM=D:\CLion\bin\ninja\win\x64\ninja.exe `
   -DCMAKE_PREFIX_PATH=D:\QT\6.11.1\mingw_64 `
-  -DCMAKE_TOOLCHAIN_FILE=D:\CppLearn\tools\vcpkg\scripts\buildsystems\vcpkg.cmake `
+  -DCMAKE_TOOLCHAIN_FILE=C:\Users\Administrator\.vcpkg-clion\vcpkg\scripts\buildsystems\vcpkg.cmake `
   -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic
 
 cmake --build D:\CppLearn\chathub\cmake-build-debug-mysql --parallel 2
@@ -116,11 +116,33 @@ git diff --check
 
 ## 5. 启动与关闭顺序
 
+### 5.1 Compose 基础设施依赖
+
+Compose 只编排 MySQL 和 Redis；Auth Service、ChatServer、Qt Client 继续在 Windows 主机进程中运行。首次使用时，从公开模板创建私有配置：
+
+```powershell
+Set-Location D:\CppLearn\chathub
+# 仅当私有 .env 尚不存在时执行；不要覆盖已有本机配置。
+Copy-Item .env.example .env
+```
+
+在私有 `.env` 中填写 MySQL 密码；不要把 `.env`、密码、JWT 或内部服务密钥提交到 Git 或粘贴到日志。先只验证 Compose 配置，再启动并等待服务健康：
+
+```powershell
+docker compose config -q
+docker compose up --wait --wait-timeout 90
+docker compose ps
+```
+
+`docker compose config -q` 必须以退出码 `0` 完成；`docker compose ps` 中 MySQL 与 Redis 都应为 `healthy`。MySQL 只发布为 `127.0.0.1:3307`，Redis 只发布为 `127.0.0.1:6380`，不向局域网开放。
+
+日常停止依赖使用 `docker compose down`：它会删除 container 和 network，但保留 named volume，因此 MySQL 数据和 Redis 未过期 TTL 状态会在下次启动时恢复。`docker compose down -v` 还会删除本项目的 MySQL/Redis named volume，旧数据将不可恢复；只能在先盘点并确认其中数据可删除时执行。
+
 1. 确认 Redis 已运行，然后启动 Auth Service：
 
    ```powershell
    Set-Location D:\CppLearn\chathub\auth-service
-   $env:CHATHUB_REDIS_URL = 'redis://127.0.0.1:6379'
+   $env:CHATHUB_REDIS_URL = 'redis://127.0.0.1:6380'
    $env:SECRET_KEY = '<仅当前终端的本地签名密钥>'
    $env:CHATHUB_AUTH_INTERNAL_SERVICE_KEY = '<仅当前终端的内部服务密钥>'
    npm start
@@ -152,8 +174,8 @@ git diff --check
          --auth-timeout-ms 5000 `
          --storage-backend mysql `
          --mysql-host 127.0.0.1 `
-         --mysql-port 3306 `
-         --mysql-username your_mysql_user `
+         --mysql-port 3307 `
+         --mysql-username chathub `
          --mysql-database chathub
    }
    finally {
@@ -162,7 +184,7 @@ git diff --check
    ```
 
    MySQL 模式必须显式提供 `--mysql-username` 和 `--mysql-database`；`--mysql-host`、`--mysql-port` 默认分别为
-   `127.0.0.1`、`3306`。MySQL 参数不能与 `--database-path` 混用。Factory 会在服务器监听前完成连接和 Schema 初始化；
+   `127.0.0.1`、`3306`。使用本 README 的 Compose 依赖时，显式传入 `--mysql-port 3307`；上例假定私有 `.env` 仍使用模板中的应用用户名 `chathub`，如已修改则替换为其中的 `CHATHUB_MYSQL_USER`。MySQL 参数不能与 `--database-path` 混用。Factory 会在服务器监听前完成连接和 Schema 初始化；
    缺失密码、连接失败、认证插件不可用或 Schema 初始化失败都会非零退出，不会留下一个无法持久化消息的监听端口。要回退到 SQLite，
    去掉全部 `--mysql-*` 参数并把 `--storage-backend` 改为 `sqlite`，或直接省略后端参数。
 
@@ -202,19 +224,20 @@ git diff --check
 
 ## 7. 演示与验收路径
 
-| 场景       | 操作                                                                                                               | 可观察结果                                                                               |
-|----------|------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------|
-| 双账户聊天    | 启动两个 Client，分别注册/登录 Alice、Bob；Alice 向 Bob 发送消息                                                                   | Bob 收到消息；Alice 依次显示已接受、送达                                                           |
-| 三账户连续聊天  | Alice、Bob、Carol 依次登录，执行 A→B、B→C、C→A                                                                              | 第三人不收到无关私聊；三人在线快照和心跳保持可用                                                            |
-| 重启后历史    | 先完成一轮聊天，关闭并重启 ChatServer，再登录原用户                                                                                  | 客户端认证后请求最近 50 条历史；按 `(server_received_at_ms, message_id)` 正序合并，不重复                  |
-| 认证超时     | 运行 `ctest --test-dir D:\CppLearn\chathub\cmake-build-debug-mysql -R "online_users_integration_test\|server_process_config_test" --output-on-failure` | 未认证连接收到 `scope=auth` / `code=authentication_timeout` 后关闭 |
-| 第 89 人拒绝 | 运行 `ctest --test-dir D:\CppLearn\chathub\cmake-build-debug-mysql -R online_users_integration_test --output-on-failure` | 第 89 名候选收到 `scope=online_users` / `code=online_snapshot_capacity_exceeded`；已有用户不受影响 |
+| 场景       | 操作                                                                                                                                                   | 可观察结果                                                                               |
+|----------|------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------|
+| 双账户聊天    | 启动两个 Client，分别注册/登录 Alice、Bob；Alice 向 Bob 发送消息                                                                                                       | Bob 收到消息；Alice 依次显示已接受、送达                                                           |
+| 三账户连续聊天  | Alice、Bob、Carol 依次登录，执行 A→B、B→C、C→A                                                                                                                  | 第三人不收到无关私聊；三人在线快照和心跳保持可用                                                            |
+| 重启后历史    | 先完成一轮聊天，关闭并重启 ChatServer，再登录原用户                                                                                                                      | 客户端认证后请求最近 50 条历史；按 `(server_received_at_ms, message_id)` 正序合并，不重复                  |
+| 认证超时     | 运行 `ctest --test-dir D:\CppLearn\chathub\cmake-build-debug-mysql -R "online_users_integration_test\|server_process_config_test" --output-on-failure` | 未认证连接收到 `scope=auth` / `code=authentication_timeout` 后关闭                            |
+| 第 89 人拒绝 | 运行 `ctest --test-dir D:\CppLearn\chathub\cmake-build-debug-mysql -R online_users_integration_test --output-on-failure`                               | 第 89 名候选收到 `scope=online_users` / `code=online_snapshot_capacity_exceeded`；已有用户不受影响 |
 
 更细的故障临时环境、根因、保护机制和回归命令见 [W10 故障记录](docs/故障记录/W10-交付稳定性故障记录.md)。
 
 ## 8. 项目文档
 
 - [W10 交付稳定性需求](docs/W10需求文档-交付稳定性.md)
+- [W13 工程交付与可重复验证需求](docs/W13需求文档-工程交付与可重复验证.md)
 - [协议字段与状态流向总图](docs/ChatHub协议字段与状态流向总图.md)
 - [W10 故障记录](docs/故障记录/W10-交付稳定性故障记录.md)
 - [文档索引](docs/README.md)

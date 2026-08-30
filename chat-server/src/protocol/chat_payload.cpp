@@ -1,6 +1,6 @@
 #include "protocol/chat_payload.h"
 
-#include <boost/json/src.hpp>
+#include <boost/json.hpp>
 #include <boost/system/error_code.hpp>
 
 #include <algorithm>
