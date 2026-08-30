@@ -635,6 +635,7 @@ module.exports = {
     createChatEnvironment,
     createUsers,
     delay,
+    expectOnlineUsers,
     probeTcpPort,
     readAuthFailure,
     readJsonFrame,

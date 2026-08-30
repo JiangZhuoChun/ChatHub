@@ -12,7 +12,8 @@
     "test:e2e": "node --test test/cross_process_revocation.e2e.js",
     "test:three-client": "node --test test/three_client_chat.e2e.js",
     "test:ten-client": "node --test test/ten_client_ring.e2e.js",
-    "test:twenty-client": "node --test test/twenty_client_ring.e2e.js"
+    "test:twenty-client": "node --test test/twenty_client_ring.e2e.js",
+    "test:authenticated-disconnect": "node --test test/authenticated_disconnect.e2e.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
