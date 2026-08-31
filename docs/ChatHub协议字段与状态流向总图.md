@@ -1,6 +1,6 @@
 # ChatHub 协议字段与状态流向总图
 
-> 状态：持续维护 | 创建：2026-08-13 | 当前范围：W8–W11 已实现的协议合同
+> 状态：持续维护 | 创建：2026-08-13 | 当前范围：W8–W13 已实现的协议、存储与基础设施边界
 >
 > 用途：任何新增、删除或变更协议字段、消息身份、状态值前，先更新本文件；实现、测试和需求文档在同一次提交中同步更新。本文件用于核对流向，具体校验规则以对应需求文档和代码为准。
 
@@ -137,6 +137,35 @@ flowchart TD
 
 ---
 
+## 四点五、W13 基础设施与认证 API 边界
+
+Docker Compose 只提供本机 MySQL 与 Redis；它没有容器化 Auth Service、ChatServer 或 Qt Client，也没有改变 TCP 帧、HTTP API 或任一状态的所有者。
+
+```mermaid
+flowchart LR
+    Q["Qt Client"] -->|"HTTP 登录"| A["Auth Service\n主机 :3000"]
+    Q -->|"TCP auth/chat"| S["ChatServer\n主机 :9000"]
+    S -->|"HTTP /internal/auth/introspect"| A
+    A -->|"限流、撤销 marker，TTL"| R["Compose Redis\n127.0.0.1:6380"]
+    S -->|"仅显式 MySQL 后端"| M["Compose MySQL\n127.0.0.1:3307"]
+    S -->|"默认后端"| D["SQLite"]
+```
+
+| 组件 / API | 输入与输出 | 拥有的数据 | W13 不能改变的边界 |
+|---|---|---|---|
+| Auth Service | 登录/注销、`/me`、`/internal/auth/introspect`；输出 JWT 或认证结论 | 用户 SQLite、密码哈希、JWT 签发；Redis 登录限流与撤销 marker | 不路由聊天，不保存聊天正文；真实内部服务密钥和 JWT 不进文档/日志 |
+| Redis | Auth Service 的受限 key 读写；撤销/限流 key 带 TTL | 临时认证状态 | 不是真实消息库，不保存密码、完整 JWT 或用户资料；ChatServer 不直接连接 Redis |
+| ChatServer | TCP `auth` 携带 JWT；向 Auth introspection 取得可信用户名；TCP 聊天帧输出 ACK/转发/送达或错误 | Session、在线映射、`PendingDeliveryMap` | 不信任客户端自报发送者；Compose 不会替它完成认证；新认证依赖不可用时必须 fail-closed |
+| MySQL / SQLite | `IMessageRepository` 的相同业务合同 | 已持久化聊天消息与历史排序字段 | MySQL 仅在启动时显式选择；Compose MySQL 不会把默认 SQLite 自动迁移或替换 |
+
+认证调用顺序固定为：Client 提交 TCP `auth` → ChatServer 带内部服务凭证调用 Auth introspection → Auth 校验 JWT 与 Redis 撤销 marker →
+ChatServer 只在得到可信用户名后建立 Session。Auth 不可用时，新连接返回 `scope=auth` / `code=authentication_dependency_unavailable`；当前合同不要求主动重验或踢除已认证 Session。
+
+消息调用顺序仍是：可信 Session 的 `chat` → Repository 成功持久化 → `chat_ack` → 接收方转发 → `delivery_receipt`。若运行期 MySQL 写入失败，发送方收到
+`scope=chat` / `code=database_write_failed`，且不得伪造 ACK 或转发。
+
+---
+
 ## 五、发送方 A 的状态机
 
 ```mermaid
@@ -205,6 +234,8 @@ sequenceDiagram
 | A 或真正离线的 B 断线         | `sender_session_id` / `recipient_username` | 删除相关 `PendingDelivery`；A 不被伪造为 `Delivered`                                    |
 | ChatServer 重启         | 内存表清空                                      | 所选 Repository 后端的历史仍在；`Delivered` 不恢复                                        |
 | 未认证连接达到截止             | 无可信身份                                      | 返回 `scope=auth` / `code=authentication_timeout` 后关闭，不进入在线映射                   |
+| Auth introspection 不可用 | 新 TCP `auth` 需要可信身份结论                           | 返回 `scope=auth` / `code=authentication_dependency_unavailable`；新连接不放行，旧 Session 不主动重验 |
+| 运行期 MySQL 写入失败 | Repository 在持久化聊天时失败                              | 返回 `scope=chat` / `code=database_write_failed`；不得发送 `chat_ack` 或转发给接收者 |
 | 第 89 名用户认证            | 完整在线快照容量                                   | 返回 `scope=online_users` / `code=online_snapshot_capacity_exceeded` 后关闭，既有映射不变 |
 
 ---
@@ -213,4 +244,6 @@ sequenceDiagram
 
 - [W9 需求文档：SQLite 持久化](W9需求文档-SQLite持久化.md)
 - [W11 需求文档：MySQL 集成与存储抽象](W11需求文档-MySQL集成与存储抽象.md)
+- [W12 需求文档：Redis 临时状态与认证安全](W12需求文档-Redis临时状态与认证安全.md)
+- [W13 需求文档：工程交付与可重复验证](W13需求文档-工程交付与可重复验证.md)
 - [W8-9 最终送达回执需求文档](W8-9最终送达回执需求文档.md)

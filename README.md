@@ -4,10 +4,10 @@ ChatHub 是一个 Windows 本地开发的单机聊天项目：Qt 客户端通过
 通过 Auth Service introspection 完成 TCP 新连接认证，并通过统一的 `IMessageRepository` 使用 SQLite 或 MySQL 持久化消息。
 Redis 只保存登录限流和 JWT 撤销 marker 等带 TTL 的认证临时状态；SQLite 是默认消息后端，MySQL 需要在启动时显式选择。
 
-本 README
-只记录已实现且有验证证据的行为。需求、协议细节和故障复现分别见 [W10 需求](docs/W10需求文档-交付稳定性.md)、
+本 README 只记录已实现且有验证证据的行为。需求、协议细节和故障复现分别见 [W10 需求](docs/W10需求文档-交付稳定性.md)、
 [W11 MySQL 需求](docs/W11需求文档-MySQL集成与存储抽象.md)、[W12 Redis/认证需求](docs/W12需求文档-Redis临时状态与认证安全.md)、[W13 工程交付需求](docs/W13需求文档-工程交付与可重复验证.md)、
-[协议总图](docs/ChatHub协议字段与状态流向总图.md) 和 [W10 故障记录](docs/故障记录/W10-交付稳定性故障记录.md)。
+[协议总图](docs/ChatHub协议字段与状态流向总图.md)、[W13 演示与人工验收脚本](docs/W13演示与人工验收脚本.md)、
+[W13 Release Checklist](docs/ReleaseChecklist-W13.md) 和 [W13 交接文档](docs/交接文档-2026-08-31-W13-工程交付与可重复验证.md)。
 
 ## 1. 单机架构与数据所有权
 
@@ -47,161 +47,100 @@ flowchart LR
 
 ## 3. Windows 依赖与首次配置
 
-当前根 `CMakeLists.txt` 使用以下本机开发路径；在其他机器上先安装等价依赖并调整为自己的路径：
+需要 CMake 3.21+、Ninja、与 Qt 匹配的 C++17 MinGW、Qt 6（Core/Gui/Widgets/Network）、Node.js/npm，以及 Docker Desktop + Compose。
+项目的 `vcpkg.json` 声明 C++ 直接依赖；MinGW 构建必须使用 `x64-mingw-dynamic`，不能把 MSVC 的 `x64-windows` 库混入其中。
 
-- CMake 3.21+、Ninja、支持 C++17 的 MinGW；
-- Qt 6.11.1（Core、Gui、Widgets、Network）；
-- standalone Asio、Boost.JSON、OpenSSL、SQLite3、jwt-cpp；
-- vcpkg manifest 与 MariaDB Connector/C（`libmariadb >= 3.4.8`）；当前 MinGW 构建使用 `x64-mingw-dynamic` triplet；
-- Node.js 与 npm（Auth Service）；
-- Docker Desktop 与 Docker Compose（运行 `mysql:8.4.11` 和 `redis:8.2.9-alpine` 基础设施依赖）。
+共享的 [CMakePresets.json](CMakePresets.json) 不保存个人路径或秘密：其中的 `debug-base` 是公共 Debug 基础，`ci-windows-mingw-debug` 供 CI 通过环境变量使用。
+每位开发者在已忽略的 `CMakeUserPresets.json` 中创建自己的 `windows-mingw-debug`、build 与 test preset，或让 CLion 生成等价的本机配置。它需要映射以下本机输入：MinGW 编译器/Ninja、Qt 根目录、vcpkg toolchain 和 `x64-mingw-dynamic`。不要把这个文件提交。
 
-项目根目录的 `vcpkg.json` 声明 `libmariadb`。CMake 必须使用与 Qt MinGW 13.1 匹配的 vcpkg toolchain 和
-`x64-mingw-dynamic` triplet，不能把 MSVC 的 `x64-windows` 库与 MinGW 目标混用。构建 `chat-server` 后，CMake 会把
-`libmariadb` 所需的认证插件复制到可执行文件旁的 `plugins/libmariadb` 目录。
-
-Auth Service 首次使用时在 `auth-service` 目录运行 `npm install`。它从私有 `.env` 读取 `CHATHUB_REDIS_URL`、`SECRET_KEY` 和
-`CHATHUB_AUTH_INTERNAL_SERVICE_KEY`；可选的 `CHATHUB_REDIS_KEY_PREFIX`、`CHATHUB_LOGIN_USER_LIMIT`、`CHATHUB_LOGIN_IP_LIMIT`、
-`CHATHUB_LOGIN_WINDOW_SECONDS` 用于认证临时状态配置。`.env` 和 `auto.db` 都是本机数据，不提交；README 不记录任何实际密钥。
+Auth Service 首次使用时在 `auth-service` 目录运行 `npm install`。其私有 `.env` 提供 `CHATHUB_REDIS_URL`、`SECRET_KEY` 和
+`CHATHUB_AUTH_INTERNAL_SERVICE_KEY`；`.env`、`auto.db`、测试生成的临时目录和任何 token 都是本机数据，不能提交或粘贴到记录中。
 
 ## 4. 构建与自动化验证
 
-在仓库根目录执行：
+### 4.1 本地 CMake/CTest
+
+先在仓库根目录用本机 User Preset 配置和构建；`ctest` 不会自动编译，所以顺序不能颠倒：
 
 ```powershell
-cmake -S D:\CppLearn\chathub `
-  -B D:\CppLearn\chathub\cmake-build-debug-mysql `
-  -G Ninja `
-  -DCMAKE_CXX_COMPILER=D:\QT\Tools\mingw1310_64\bin\c++.exe `
-  -DCMAKE_MAKE_PROGRAM=D:\CLion\bin\ninja\win\x64\ninja.exe `
-  -DCMAKE_PREFIX_PATH=D:\QT\6.11.1\mingw_64 `
-  -DCMAKE_TOOLCHAIN_FILE=C:\Users\Administrator\.vcpkg-clion\vcpkg\scripts\buildsystems\vcpkg.cmake `
-  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic
-
-cmake --build D:\CppLearn\chathub\cmake-build-debug-mysql --parallel 2
-ctest --test-dir D:\CppLearn\chathub\cmake-build-debug-mysql --output-on-failure
+cmake --preset windows-mingw-debug
+cmake --build --preset windows-mingw-debug-build
+ctest --preset windows-mingw-debug-test
 ```
 
-`ctest` 不会先编译；每次修改后先执行 `cmake --build`，再运行 CTest。当前回归集包含帧解码、Repository、历史响应、运行配置、真实
-Server 子进程、在线快照/认证截止、Qt 历史客户端和会话排序测试。
+本机的已记录基线为 23 个注册 CTest 中 `13 Passed、10 Skipped、0 Failed`。`Skipped` 表示 MySQL 专项缺少专用环境门禁，**不是通过**；
+它也不代表 Redis、完整 Auth E2E 或生产 MySQL 已由 CTest 覆盖。每次需要交付时都必须重新运行命令并记录当次计数。
 
-Auth Service 的语法检查在其目录执行：
+### 4.2 Auth Service 与真实跨进程 E2E
 
-```powershell
-node --check src/server.js
-node --check src/db.js
-```
-
-Auth Service 的测试分为普通模块/HTTP 测试和真实跨进程撤销 E2E。两者都必须显式提供专用 Redis 地址；E2E 固定使用 Auth
-Service 的生产端口 `3000`，不要和其他启动 Auth Service 的命令并行运行：
+以下测试使用真实 Redis、真实 Auth Service 和真实 ChatServer 子进程；它们各自创建临时 Auth/SQLite 数据、唯一用户名与 Redis prefix，
+只清理本次资源，不使用 `FLUSHDB`。所有 E2E 都占用 Auth 的固定端口 `3000`，因此先关闭手动启动的 Auth Service，并按顺序运行。
 
 ```powershell
-Set-Location D:\CppLearn\chathub\auth-service
-$env:CHATHUB_REDIS_TEST_URL = '<仅当前终端的专用测试 URL>'
+Set-Location .\auth-service
+$env:CHATHUB_REDIS_TEST_URL = 'redis://127.0.0.1:6380'
+$env:CHATHUB_CHAT_SERVER_EXECUTABLE = (Resolve-Path '..\cmake-build-debug-mysql\chat-server\chat-server.exe')
+
 npm test
 npm run test:e2e
+npm run test:three-client
+npm run test:ten-client
+npm run test:twenty-client
+npm run test:authenticated-disconnect
+npm run test:mysql-write-failure
+npm run test:auth-dependency-failure
 ```
 
-`npm run test:e2e` 默认使用 `D:\CppLearn\chathub\cmake-build-debug-mysql\chat-server\chat-server.exe`；如需使用其他构建产物，
-可在当前终端设置 `CHATHUB_CHAT_SERVER_EXECUTABLE`。测试为 Auth Service 和 ChatServer 各自创建临时工作目录/数据库，并为每次运行
-生成唯一 Redis key prefix，结束时清理本次资源。
+`test:e2e` 覆盖 logout 后新 TCP 连接拒绝、旧已认证连接仍按当前合同可用；3/10/20 客户端脚本验证受控顺序下的认证、ACK、转发、送达和关闭统计。
+它们不是吞吐、最大容量或并发竞争基准。MySQL 写入失败脚本只停止自己的 TCP 代理，不停止共享 Compose MySQL；Auth 依赖失败脚本只停止自己创建的 Auth 子进程。
 
-提交前再执行：
+CI 使用公开 Qt 6.10.1 的 Windows/MinGW 路由，执行 `unit|network|process|qt` 并排除 `mysql|redis`。因此 CI 绿灯不能被写成 MySQL、Redis 或全部 E2E 已通过。
+
+提交前至少执行：
 
 ```powershell
+git status --short
 git diff --check
+git diff --cached --check
 ```
 
-构建产物、`*.db`、`.env`、令牌和本地学习笔记不应暂存。
+构建产物、`*.db`、`.env`、token、日志正文、录像原始文件和本地学习资料不应暂存。
 
 ## 5. 启动与关闭顺序
 
 ### 5.1 Compose 基础设施依赖
 
-Compose 只编排 MySQL 和 Redis；Auth Service、ChatServer、Qt Client 继续在 Windows 主机进程中运行。首次使用时，从公开模板创建私有配置：
+Compose 只编排 MySQL 和 Redis；Auth Service、ChatServer、Qt Client 始终是 Windows 主机进程。首次使用时仅在私有 `.env` 尚不存在时创建它：
 
 ```powershell
-Set-Location D:\CppLearn\chathub
-# 仅当私有 .env 尚不存在时执行；不要覆盖已有本机配置。
 Copy-Item .env.example .env
-```
-
-在私有 `.env` 中填写 MySQL 密码；不要把 `.env`、密码、JWT 或内部服务密钥提交到 Git 或粘贴到日志。先只验证 Compose 配置，再启动并等待服务健康：
-
-```powershell
 docker compose config -q
 docker compose up --wait --wait-timeout 90
 docker compose ps
 ```
 
-`docker compose config -q` 必须以退出码 `0` 完成；`docker compose ps` 中 MySQL 与 Redis 都应为 `healthy`。MySQL 只发布为 `127.0.0.1:3307`，Redis 只发布为 `127.0.0.1:6380`，不向局域网开放。
+在私有 `.env` 中填写 MySQL 密码，绝不提交它。`config -q` 必须以退出码 0 结束；`ps` 中 MySQL 与 Redis 都必须是 `healthy`。
+当前 Compose 将 MySQL 映射为 `127.0.0.1:3307`、Redis 映射为 `127.0.0.1:6380`，不向局域网开放。
 
-日常停止依赖使用 `docker compose down`：它会删除 container 和 network，但保留 named volume，因此 MySQL 数据和 Redis 未过期 TTL 状态会在下次启动时恢复。`docker compose down -v` 还会删除本项目的 MySQL/Redis named volume，旧数据将不可恢复；只能在先盘点并确认其中数据可删除时执行。
+`docker compose down` 移除 container/network 但保留 named volume；`docker compose down -v` 还会删除 MySQL/Redis 本地数据，旧数据库内容和未过期 Redis marker 都不能再假定存在。只有盘点并确认可删除后才可执行后者。
 
-1. 确认 Redis 已运行，然后启动 Auth Service：
+### 5.2 主机应用进程
 
-   ```powershell
-   Set-Location D:\CppLearn\chathub\auth-service
-   $env:CHATHUB_REDIS_URL = 'redis://127.0.0.1:6380'
-   $env:SECRET_KEY = '<仅当前终端的本地签名密钥>'
-   $env:CHATHUB_AUTH_INTERNAL_SERVICE_KEY = '<仅当前终端的内部服务密钥>'
-   npm start
-   ```
-
-   它监听本机 `3000` 端口，并在当前目录创建或打开 `auto.db`；启动前会先连接 Redis，依赖失败时不监听 HTTP。
-
-2. 启动 ChatServer。未指定后端时默认使用 SQLite。先创建只用于本地运行的数据库目录：
+1. Compose Redis 健康后，在 `auth-service` 中用私有 `.env` 启动 `npm start`。Auth Service 必须先连接 Redis 和打开 SQLite，成功后才监听本机 `3000`。
+2. 设置 `CHATHUB_AUTH_INTROSPECTION_URL` 和 `CHATHUB_AUTH_INTERNAL_SERVICE_KEY` 后启动 ChatServer。默认 SQLite 示例：
 
    ```powershell
-   Set-Location D:\CppLearn\chathub
-   $env:CHATHUB_AUTH_INTROSPECTION_URL = 'http://127.0.0.1:3000/internal/auth/introspect'
-   $env:CHATHUB_AUTH_INTERNAL_SERVICE_KEY = '<与 Auth Service 相同的本地内部服务密钥>'
    New-Item -ItemType Directory -Force .\run-data
-   .\cmake-build-debug-mysql\chat-server\chat-server.exe --port 9000 --database-path .\run-data\chathub.db --auth-timeout-ms 5000
+   .\cmake-build-debug-mysql\chat-server\chat-server.exe `
+     --port 9000 `
+     --database-path .\run-data\chathub.db `
+     --auth-timeout-ms 5000
    ```
 
-   要显式使用 MySQL，只把主机、端口、用户名和数据库名放在命令行；密码由当前 ChatServer 进程通过
-   `CHATHUB_MYSQL_PASSWORD` 读取。下面的 PowerShell 示例隐藏密码输入，并在 ChatServer 退出后清除当前终端中的临时环境变量：
-
-   ```powershell
-   $secureMySqlPassword = Read-Host 'MySQL 密码' -AsSecureString
-   $env:CHATHUB_MYSQL_PASSWORD =
-       [System.Net.NetworkCredential]::new('', $secureMySqlPassword).Password
-
-   try {
-       .\cmake-build-debug-mysql\chat-server\chat-server.exe `
-         --port 9000 `
-         --auth-timeout-ms 5000 `
-         --storage-backend mysql `
-         --mysql-host 127.0.0.1 `
-         --mysql-port 3307 `
-         --mysql-username chathub `
-         --mysql-database chathub
-   }
-   finally {
-       Remove-Item Env:CHATHUB_MYSQL_PASSWORD -ErrorAction SilentlyContinue
-   }
-   ```
-
-   MySQL 模式必须显式提供 `--mysql-username` 和 `--mysql-database`；`--mysql-host`、`--mysql-port` 默认分别为
-   `127.0.0.1`、`3306`。使用本 README 的 Compose 依赖时，显式传入 `--mysql-port 3307`；上例假定私有 `.env` 仍使用模板中的应用用户名 `chathub`，如已修改则替换为其中的 `CHATHUB_MYSQL_USER`。MySQL 参数不能与 `--database-path` 混用。Factory 会在服务器监听前完成连接和 Schema 初始化；
-   缺失密码、连接失败、认证插件不可用或 Schema 初始化失败都会非零退出，不会留下一个无法持久化消息的监听端口。要回退到 SQLite，
-   去掉全部 `--mysql-*` 参数并把 `--storage-backend` 改为 `sqlite`，或直接省略后端参数。
-
-   通用参数默认值为端口 `9000`、SQLite 数据库 `chathub.db`、认证截止 `5000ms`。端口必须为 `1–65535`，认证截止必须为
-   `1000–30000ms`；非法、重复、未知或缺值参数会在创建监听器和数据库前以 `configuration_error: <code>` 非零退出。
-
-3. 启动 Qt Client：
-
-   ```powershell
-   Set-Location D:\CppLearn\chathub
-   .\cmake-build-debug-mysql\client-qt\client-qt.exe
-   ```
-
-   先在登录窗口注册或登录，再由客户端连接 ChatServer。
-
-4. 关闭顺序：先关闭所有 Qt Client；再在 ChatServer 和 Auth Service 控制台分别按 `Ctrl+C`。不要把运行数据库或 `.env` 纳入
-   Git。
+   MySQL 是显式后端：使用 `--storage-backend mysql`、`--mysql-host 127.0.0.1`、`--mysql-port 3307`、私有 `.env` 中对应的用户名/数据库名，
+   并只经进程环境提供 `CHATHUB_MYSQL_PASSWORD`。MySQL 参数不能与 `--database-path` 混用；连接、认证插件或 Schema 初始化失败会在监听前非零退出。去掉全部 `--mysql-*` 参数即可回到 SQLite。
+3. 启动两个 Qt Client，分别注册/登录临时演示账号。完整的人工路径见 [W13 演示与人工验收脚本](docs/W13演示与人工验收脚本.md)。
+4. 停止时先关 Qt Client，再分别在 ChatServer 和 Auth Service 控制台按 `Ctrl+C`。不要把 `run-data`、`.env` 或 `auto.db` 纳入 Git。
 
 ## 6. TCP 协议速查
 
@@ -224,20 +163,17 @@ docker compose ps
 
 ## 7. 演示与验收路径
 
-| 场景       | 操作                                                                                                                                                   | 可观察结果                                                                               |
-|----------|------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------|
-| 双账户聊天    | 启动两个 Client，分别注册/登录 Alice、Bob；Alice 向 Bob 发送消息                                                                                                       | Bob 收到消息；Alice 依次显示已接受、送达                                                           |
-| 三账户连续聊天  | Alice、Bob、Carol 依次登录，执行 A→B、B→C、C→A                                                                                                                  | 第三人不收到无关私聊；三人在线快照和心跳保持可用                                                            |
-| 重启后历史    | 先完成一轮聊天，关闭并重启 ChatServer，再登录原用户                                                                                                                      | 客户端认证后请求最近 50 条历史；按 `(server_received_at_ms, message_id)` 正序合并，不重复                  |
-| 认证超时     | 运行 `ctest --test-dir D:\CppLearn\chathub\cmake-build-debug-mysql -R "online_users_integration_test\|server_process_config_test" --output-on-failure` | 未认证连接收到 `scope=auth` / `code=authentication_timeout` 后关闭                            |
-| 第 89 人拒绝 | 运行 `ctest --test-dir D:\CppLearn\chathub\cmake-build-debug-mysql -R online_users_integration_test --output-on-failure`                               | 第 89 名候选收到 `scope=online_users` / `code=online_snapshot_capacity_exceeded`；已有用户不受影响 |
-
-更细的故障临时环境、根因、保护机制和回归命令见 [W10 故障记录](docs/故障记录/W10-交付稳定性故障记录.md)。
+演示不替代测试。人工演示只用于观察 UI 和真实启动顺序；logout 新连接拒绝与受控依赖故障由专用 E2E 脚本提供可重复证据。
+按 [W13 演示与人工验收脚本](docs/W13演示与人工验收脚本.md) 执行并记录：基础设施健康、构建/CTest 入口、双账户聊天、ChatServer 重启后的历史、
+`npm run test:e2e` 的 logout 新连接拒绝，以及 `npm run test:mysql-write-failure` 的受控故障。不得把尚未填写的人工记录写成验收通过。
 
 ## 8. 项目文档
 
 - [W10 交付稳定性需求](docs/W10需求文档-交付稳定性.md)
 - [W13 工程交付与可重复验证需求](docs/W13需求文档-工程交付与可重复验证.md)
 - [协议字段与状态流向总图](docs/ChatHub协议字段与状态流向总图.md)
+- [W13 演示与人工验收脚本](docs/W13演示与人工验收脚本.md)
+- [W13 Release Checklist](docs/ReleaseChecklist-W13.md)
+- [W13 工程交付与可重复验证交接](docs/交接文档-2026-08-31-W13-工程交付与可重复验证.md)
 - [W10 故障记录](docs/故障记录/W10-交付稳定性故障记录.md)
 - [文档索引](docs/README.md)
